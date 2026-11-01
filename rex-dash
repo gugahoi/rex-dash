@@ -17,8 +17,8 @@ const PROJECTS = path.join(HOME, '.claude', 'projects');
 const DAYS = 30;
 
 // ---- helpers
-const sh = (cmd, args) => new Promise((resolve, reject) =>
-  execFile(cmd, args, { maxBuffer: 64 << 20 }, (err, out, errOut) => err ? reject(new Error(errOut || err.message)) : resolve(out)));
+const sh = (cmd, args, opts = {}) => new Promise((resolve, reject) =>
+  execFile(cmd, args, { maxBuffer: 64 << 20, ...opts }, (err, out, errOut) => err ? reject(new Error(errOut || err.message)) : resolve(out)));
 const json = async (cmd, args) => JSON.parse(await sh(cmd, args));
 
 const style = (code) => (s) => `\x1b[${code}m${s}\x1b[0m`;
@@ -49,7 +49,26 @@ function clip(s, w) {
   return out;
 }
 
-// ---- fleet: every pane in every Rex session, with what its program reports
+// ---- repo: started inside a git repo, the cockpit shows only that repo.
+// The repo's roots are its worktrees' folders. In the bare-plus-worktrees
+// layout (<dir>/.bare) <dir> is a root too, so worktrees made later count.
+let repo = null; // { roots, gh: 'owner/name' or null, name }
+async function detectRepo(dir) {
+  let list;
+  try { list = await sh('git', ['-C', dir, 'worktree', 'list', '--porcelain']); } catch { return null; }
+  const roots = [];
+  for (const entry of list.trim().split('\n\n')) {
+    const p = entry.match(/^worktree (.+)$/m)?.[1];
+    if (!p) continue;
+    const root = /^bare$/m.test(entry) && path.basename(p) === '.bare' ? path.dirname(p) : p;
+    try { roots.push(fs.realpathSync(root)); } catch { roots.push(root); } // /tmp is /private/tmp on macOS
+  }
+  const gh = await sh('gh', ['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], { cwd: dir }).then((s) => s.trim(), () => null);
+  return { roots, gh, name: gh || path.basename(roots[0]) };
+}
+const inRepo = (p) => !repo || (!!p && repo.roots.some((r) => p === r || p.startsWith(r + '/')));
+
+// ---- fleet: every pane in every Rex session (in the repo), with what its program reports
 const RANK = { blocked: 0, error: 1, working: 2, done: 3, idle: 4 };
 const STATE = {
   blocked: yellow('◆ blocked'), error: red('✗ error  '), working: green('● working'),
@@ -69,8 +88,8 @@ async function fleet() {
         prog: proc.foreground?.name || b.label, cwd: proc.foreground?.cwd, title: title.title, rec,
       };
     }));
-    return { label: s.label, panes };
-  }));
+    return { label: s.label, panes: panes.filter((p) => inRepo(p.cwd)) };
+  })).then((all) => all.filter((s) => s.panes.length));
 }
 
 function renderFleet(f) {
@@ -91,16 +110,19 @@ function renderFleet(f) {
   return out;
 }
 
-// ---- PRs: open PRs you wrote, and PRs waiting on your review, across GitHub
-const PR_QUERY = `query {
-  mine: search(query: "is:pr is:open author:@me archived:false sort:updated-desc", type: ISSUE, first: 30) { issueCount nodes { ...pr } }
-  review: search(query: "is:pr is:open review-requested:@me archived:false sort:updated-desc", type: ISSUE, first: 30) { issueCount nodes { ...pr } }
+// ---- PRs: open PRs you wrote, and PRs waiting on your review, across GitHub (or in the repo)
+const prQuery = (scope) => `query {
+  mine: search(query: "is:pr is:open author:@me archived:false sort:updated-desc${scope}", type: ISSUE, first: 30) { issueCount nodes { ...pr } }
+  review: search(query: "is:pr is:open review-requested:@me archived:false sort:updated-desc${scope}", type: ISSUE, first: 30) { issueCount nodes { ...pr } }
 }
 fragment pr on PullRequest {
   number title isDraft reviewDecision updatedAt repository { name }
   commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
 }`;
-const prs = async () => (await json('gh', ['api', 'graphql', '-f', `query=${PR_QUERY}`])).data;
+async function prs() {
+  if (repo && !repo.gh) throw new Error('no GitHub remote, so no PRs');
+  return (await json('gh', ['api', 'graphql', '-f', `query=${prQuery(repo ? ` repo:${repo.gh}` : '')}`])).data;
+}
 
 const CI = { SUCCESS: green('✓'), FAILURE: red('✗'), ERROR: red('✗'), PENDING: yellow('◐'), EXPECTED: yellow('◐') };
 const REVIEW = { APPROVED: green('approved'), CHANGES_REQUESTED: red('changes'), REVIEW_REQUIRED: yellow('review') };
@@ -118,7 +140,7 @@ function renderPRs(d) {
 }
 
 // ---- usage: Claude Code tokens by model, from ~/.claude/projects transcripts
-// One row per usage line: [message id, model, day, total tokens, output tokens].
+// One row per usage line: [message id, model, day, total tokens, output tokens, session folder].
 function parseUsage(text) {
   const rows = [];
   for (const line of text.split('\n')) {
@@ -128,19 +150,19 @@ function parseUsage(text) {
     const m = e.message, u = m?.usage;
     if (!u || !m.model || m.model === '<synthetic>') continue;
     const total = (u.input_tokens || 0) + (u.output_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
-    rows.push([m.id || e.uuid, m.model, (e.timestamp || '').slice(0, 10), total, u.output_tokens || 0]);
+    rows.push([m.id || e.uuid, m.model, (e.timestamp || '').slice(0, 10), total, u.output_tokens || 0, e.cwd]);
   }
   return rows;
 }
 
 // A message with several content blocks repeats its usage on each line, so
-// count each message id once.
-function aggregate(rowLists, now = Date.now()) {
+// count each message id once. keep(folder) picks the sessions to count.
+function aggregate(rowLists, now = Date.now(), keep = inRepo) {
   const days = Array.from({ length: DAYS }, (_, i) => new Date(now - (DAYS - 1 - i) * 864e5).toISOString().slice(0, 10));
   const seen = new Set(), models = {}, daily = Object.fromEntries(days.map((d) => [d, 0]));
   for (const rows of rowLists) {
-    for (const [id, model, day, total, out] of rows) {
-      if (!(day in daily) || seen.has(id)) continue;
+    for (const [id, model, day, total, out, cwd] of rows) {
+      if (!(day in daily) || seen.has(id) || !keep(cwd)) continue;
       seen.add(id);
       const m = (models[model] ||= [model, 0, 0]);
       m[1] += total; m[2] += out;
@@ -169,6 +191,7 @@ function usage() {
 const SPARK = ' ▁▂▃▄▅▆▇█';
 function renderUsage(u) {
   const max = Math.max(1, ...u.daily), top = u.models[0]?.[1] || 1;
+  if (!u.models.length) return [head(`USAGE · ${DAYS}d tokens`), dim(`  no Claude Code sessions in the last ${DAYS} days`)];
   const out = [head(`USAGE · ${DAYS}d tokens`, shaded(u.daily.map((v) => SPARK[Math.round((v / max) * 8)]).join('')))];
   for (const [model, total, outTok] of u.models.slice(0, 8)) {
     out.push(`  ${pad(plain(model).replace(/^claude-/, ''), 18)} ${pad(fmt(total), 7)} ${dim(pad('out ' + fmt(outTok), 11))} ${shaded('▬'.repeat(Math.max(1, Math.round((total / top) * 20))))}`);
@@ -270,7 +293,8 @@ function frame() {
     state[key + 'Err'] ? [head(key.toUpperCase()), red('  ' + plain(state[key + 'Err']))] : state[key] ? render(state[key]) : [head(key.toUpperCase()), dim('  ' + loading)];
   const keys = `${dim('[j/k] select  [⏎] jump  [s] shader')} ${shaded(fx.shader)}  ${dim('[e] fx')} ${shaded(fx.effect)}  ${dim('[r] refresh  [q] quit')}`;
   return [
-    `${bold(shaded('REX // COCKPIT'))} ${dim('·')} ${new Date().toString().slice(0, 21)}` + (flash && Date.now() < flash.until ? `  ${flash.text}` : ''),
+    `${bold(shaded('REX // COCKPIT'))} ${dim('·')} ${repo ? `${bold(plain(repo.name))} ${dim('·')} ` : ''}${new Date().toString().slice(0, 21)}` +
+      (flash && Date.now() < flash.until ? `  ${flash.text}` : ''),
     ...(ONCE ? [] : [keys, BAND]),
     ...section('fleet', renderFleet, 'asking Rex…'),
     ...section('usage', renderUsage, `reading ${tilde(PROJECTS)}…`),
@@ -306,6 +330,7 @@ const SOURCES = { fleet: [fleet, 3e3], prs: [prs, 60e3], usage: [async () => usa
 const refreshAll = () => Object.entries(SOURCES).map(([k, [fn]]) => refresh(k, fn));
 
 async function main() {
+  repo = await detectRepo(process.cwd());
   if (ONCE) {
     await Promise.all(refreshAll());
     return console.log(frame().map((l) => paint(l, 0, Infinity, 0)).join('\n'));
@@ -343,6 +368,12 @@ if (process.argv.includes('--test')) {
   const u = aggregate([parseUsage(text)], now);
   assert.deepStrictEqual(u.models, [['claude-x', 9, 7]]); // a counted once, old outside the window
   assert.strictEqual(u.daily.at(-1), 9);
+  const inA = (id, cwd) => JSON.stringify({ timestamp: '2026-11-01T01:00:00Z', cwd, message: { id, model: 'claude-x', usage: { output_tokens: 1 } } });
+  const rows = parseUsage([inA('p', '/r/a'), inA('q', '/r/b')].join('\n'));
+  assert.deepStrictEqual(aggregate([rows], now, (cwd) => cwd === '/r/a').models, [['claude-x', 1, 1]]); // keep picks sessions by folder
+  repo = { roots: ['/r/wt'] };
+  assert.deepStrictEqual(['/r/wt', '/r/wt/main', '/r/wt-other', undefined].map(inRepo), [true, true, false, false]);
+  repo = null;
   assert.strictEqual(vis(clip(red('hello') + ' world', 3)), 'hel');
   assert.strictEqual(vis(pad(green('ok'), 4)), 'ok  ');
   for (const [name, shader] of Object.entries(SHADERS)) {

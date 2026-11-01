@@ -9,6 +9,16 @@ A dashboard pane for [Rex](https://www.superlogical.com/rex/docs). It shows:
 
 Keys: `j`/`k` or the arrow keys select an agent, Enter shows its pane in the Rex app, `s` cycles the shader, `e` cycles the effects, `r` refreshes, `q` quits.
 
+## Repo mode
+
+Started inside a git repo, the dashboard shows only that repo, and its name appears in the header:
+
+- **Fleet:** panes whose working folder is in one of the repo's worktrees. In the bare-plus-worktrees layout (`<dir>/.bare`), anything under `<dir>` counts.
+- **PRs:** only PRs in the repo's GitHub repository, the one `gh` would use. A repo without a GitHub remote shows no PRs.
+- **Usage:** only Claude Code sessions started in the repo's folders.
+
+Started anywhere else, such as your home folder, it shows everything.
+
 ## Effects
 
 Everything is drawn with truecolor text, at 10 frames a second, rewriting only rows that changed.
@@ -32,7 +42,7 @@ Put `rex-dash` on your `PATH`, for example:
 ln -s "$PWD/rex-dash" ~/.local/bin/rex-dash
 ```
 
-Open it beside your current pane:
+Open it beside your current pane. It starts in that pane's folder, so inside a repo it shows only that repo. Add `-c ~` to see everything:
 
 ```sh
 rex split -b "$REX_BLOCK" --split=right --ratio 45 --label Cockpit --focus=false -- rex-dash
