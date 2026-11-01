@@ -7,7 +7,16 @@ A dashboard pane for [Rex](https://www.superlogical.com/rex/docs). It shows:
 - **Review requests:** up to 10 open PRs waiting on your review, across GitHub, with CI and review state.
 - **My PRs:** your open PRs, with CI, review and draft state.
 
-Keys: `j`/`k` or the arrow keys select an agent, Enter shows its pane in the Rex app, `r` refreshes, `q` quits.
+Keys: `j`/`k` or the arrow keys select an agent, Enter shows its pane in the Rex app, `s` cycles the shader, `e` cycles the effects, `r` refreshes, `q` quits.
+
+## Effects
+
+Everything is drawn with truecolor text, at 10 frames a second, rewriting only rows that changed.
+
+- **Shaders** (`s`): `aurora`, `plasma`, `ember` or `off`. The shader animates the bands at the top and bottom, the headings and the usage charts.
+- **Effects** (`e`): `bloom+scanlines`, `bloom`, `scanlines` or `off`. Bloom puts a soft glow behind coloured text. Scanlines darken every other row and paint the pane's background, replacing your terminal theme's background.
+
+Both start on, at `aurora` and `bloom+scanlines`, and reset when you restart the dashboard.
 
 ## Requirements
 
