@@ -36,7 +36,13 @@ Both start on, at `aurora` and `bloom+scanlines`, and reset when you restart the
 
 ## Install
 
-Put `rex-dash` on your `PATH`, for example:
+```sh
+brew install gugahoi/tap/rex-dash
+```
+
+Homebrew installs Node and `gh`; `rex` comes with the Rex app.
+
+Or put `rex-dash` on your `PATH` yourself, for example:
 
 ```sh
 ln -s "$PWD/rex-dash" ~/.local/bin/rex-dash
@@ -59,3 +65,11 @@ rex-dash --test   run the self-check
 ```
 
 The fleet refreshes every 3 seconds, PRs every minute and usage every 5 minutes.
+
+## Releasing
+
+```sh
+git tag vX.Y.Z && git push origin vX.Y.Z
+```
+
+Or run the Release workflow from the Actions tab with a tag. It runs the self-check, creates the GitHub Release, and writes `Formula/rex-dash.rb` in [gugahoi/homebrew-tap](https://github.com/gugahoi/homebrew-tap) with `scripts/write-formula.sh`.
