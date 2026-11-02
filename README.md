@@ -8,7 +8,13 @@ A dashboard pane for [Rex](https://www.superlogical.com/rex/docs). It shows:
 - **My PRs:** up to 10 of your open PRs, with CI, review and draft state.
 - **Issues:** open issues assigned to you, most recently updated first. Each shows its labels in their GitHub colours, then its author, assignees, comment count, milestone and linked PRs. A `⇄` marks an issue with a linked PR, one that would close it, coloured by the most active one: green open, yellow draft, magenta merged, dim closed.
 
-Keys: `j`/`k` or the arrow keys select an agent, Enter shows its pane in the Rex app, `s` cycles the shader, `e` cycles the effects, `r` refreshes, `q` quits.
+Keys: `j`/`k` or the arrow keys select an agent or an issue, scrolling the dashboard to keep the selection in view; `s` cycles the shader, `e` cycles the effects, `r` refreshes, `q` quits. Enter on an agent shows its pane in the Rex app. Enter on an issue opens a worktree for it.
+
+## Opening an issue's worktree
+
+Enter on an issue runs [`wt issue <number>`](https://github.com/gugahoi/wt) in the repo, which applies wt's usual rules. It offers the issue's existing `<number>-*` branches, or a new branch named in a prompt that's prefilled from the issue's title. Then it creates the worktree, runs `wt.setupCommand`, and opens the worktree in its own session (in Rex, inside Rex) with wt's `default_command`. While wt runs, it has the dashboard's pane. When wt finishes, the dashboard comes back. If wt fails, its messages stay on screen until you press a key.
+
+This needs repo mode, since wt works on the repo it runs in.
 
 ## Repo mode
 
@@ -35,6 +41,7 @@ Both start on, at `aurora` and `bloom+scanlines`, and reset when you restart the
 - Node 20.1 or later
 - `rex` on `PATH`
 - `gh`, logged in (`gh auth login`)
+- [`wt`](https://github.com/gugahoi/wt) 1.4.0 or later, to open issues' worktrees (`brew install gugahoi/tap/wt`)
 
 ## Install
 
