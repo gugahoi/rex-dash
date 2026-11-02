@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // rex-dash: a dashboard pane for Rex. Agent fleet (every Rex pane and its
-// program status), your open PRs and review requests, and 30 days of Claude
-// Code token usage by model.
+// program status), your open PRs and review requests, open issues, and 30
+// days of Claude Code token usage by model.
 //
 //   rex-dash          live dashboard ([j/k] select an agent, [enter] jump to its pane,
 //                     [s] cycle shader, [e] cycle effects, [r] refresh, [q] quit)
@@ -135,8 +135,56 @@ const prLine = (p) => {
 function renderPRs(d) {
   return [
     head('REVIEW REQUESTS', `${d.review.issueCount} waiting on you`), ...d.review.nodes.slice(0, 10).map(prLine),
-    head('MY PRS', `${d.mine.issueCount} open`), ...d.mine.nodes.map(prLine), // last: overflow falls off the bottom
+    head('MY PRS', `${d.mine.issueCount} open`), ...d.mine.nodes.slice(0, 10).map(prLine),
   ];
+}
+
+// ---- issues: open issues in the repo, or assigned to you across GitHub, most recently updated first
+const issueQuery = (scope) => `query {
+  issues: search(query: "is:issue is:open ${scope} archived:false sort:updated-desc", type: ISSUE, first: 30) { issueCount nodes { ...issue } }
+}
+fragment issue on Issue {
+  number title updatedAt repository { name } author { login } comments { totalCount } milestone { title }
+  assignees(first: 5) { nodes { login } }
+  labels(first: 10) { nodes { name color } }
+  closedByPullRequestsReferences(first: 5, includeClosedPrs: true) { nodes { number state isDraft } }
+}`;
+async function issues() {
+  if (repo && !repo.gh) throw new Error('no GitHub remote, so no issues');
+  return (await json('gh', ['api', 'graphql', '-f', `query=${issueQuery(repo ? `repo:${repo.gh}` : 'assignee:@me')}`])).data.issues;
+}
+
+// The glyph for an issue's linked PRs (the ones that would close it), coloured
+// by the best of them: open, then draft, merged, closed.
+const LINK = { OPEN: green('⇄'), DRAFT: yellow('⇄'), MERGED: magenta('⇄'), CLOSED: dim('⇄') };
+const LINK_RANK = Object.keys(LINK);
+// A label as a chip in its GitHub colour, lifted when dark so it reads on the dark pane.
+function chip({ name, color }) {
+  const c = /^[0-9a-f]{6}$/i.test(color) ? hex('#' + color) : [128, 128, 128];
+  const lum = (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255;
+  return `${bg(mix(BASE, c, 0.25))}${fg(mix(c, [255, 255, 255], Math.max(0, 0.6 - lum)))} ${plain(name)} \x1b[0m`;
+}
+const issueLines = (i) => {
+  const links = i.closedByPullRequestsReferences.nodes
+    .map((p) => ({ number: p.number, state: p.state === 'OPEN' && p.isDraft ? 'DRAFT' : p.state }))
+    .sort((a, b) => LINK_RANK.indexOf(a.state) - LINK_RANK.indexOf(b.state));
+  const who = i.assignees.nodes.map((a) => plain(a.login)).join(', '), n = i.comments.totalCount;
+  const meta = [
+    `by ${plain(i.author?.login || 'ghost')}`, // a deleted account has no author
+    who && `assigned ${who}`,
+    n && `${n} comment${n === 1 ? '' : 's'}`,
+    i.milestone && `milestone ${plain(i.milestone.title)}`,
+    links.length && `pr ${links.map((p) => '#' + p.number).join(' ')}`,
+  ].filter(Boolean).join(' · ');
+  return [
+    `  ${LINK[links[0]?.state] || dim('·')} ${blue(`${plain(i.repository.name)}#${i.number}`)} ${plain(i.title)} ${dim(ago(i.updatedAt))}`,
+    `    ${[...i.labels.nodes.map(chip), dim(meta)].join(' ')}`,
+  ];
+};
+
+function renderIssues(d) {
+  // last: overflow falls off the bottom
+  return [head('ISSUES', `${d.issueCount} ${repo ? 'open' : 'assigned to you'}`), ...d.nodes.flatMap(issueLines)];
 }
 
 // ---- usage: Claude Code tokens by model, from ~/.claude/projects transcripts
@@ -299,6 +347,7 @@ function frame() {
     ...section('fleet', renderFleet, 'asking Rex…'),
     ...section('usage', renderUsage, `reading ${tilde(PROJECTS)}…`),
     ...section('prs', renderPRs, 'asking GitHub…'),
+    ...section('issues', renderIssues, 'asking GitHub…'),
   ].flatMap((l) => l.split('\n'));
 }
 
@@ -326,7 +375,7 @@ async function refresh(key, fn) {
   draw();
 }
 
-const SOURCES = { fleet: [fleet, 3e3], prs: [prs, 60e3], usage: [async () => usage(), 300e3] };
+const SOURCES = { fleet: [fleet, 3e3], prs: [prs, 60e3], issues: [issues, 60e3], usage: [async () => usage(), 300e3] };
 const refreshAll = () => Object.entries(SOURCES).map(([k, [fn]]) => refresh(k, fn));
 
 async function main() {
@@ -386,6 +435,15 @@ if (process.argv.includes('--test')) {
   assert.ok(paint(red('a') + 'b', 1, 80, 0).includes('\x1b[0m' + bg(SCANLINE) + 'b')); // the row colour survives resets
   Object.assign(fx, { shader: 'aurora', effect: 'bloom' });
   assert.strictEqual(vis(paint(`x${shaded('ab')}`, 0, 80, 0)), 'xab\x1b[K'); // vis keeps the erase-line code
+  const issue = (links) => ({
+    number: 7, title: 'fix it', updatedAt: new Date().toISOString(), repository: { name: 'r' }, author: { login: 'ann' },
+    comments: { totalCount: 0 }, milestone: null, assignees: { nodes: [] }, labels: { nodes: [] }, closedByPullRequestsReferences: { nodes: links },
+  });
+  const linked = [{ number: 3, state: 'CLOSED' }, { number: 2, state: 'OPEN', isDraft: true }, { number: 1, state: 'MERGED' }];
+  const starts = (links, glyph) => assert.ok(issueLines(issue(links))[0].startsWith(`  ${glyph} ${blue('r#7')} `));
+  starts(linked, yellow('⇄')); // a draft beats merged and closed PRs
+  starts([...linked, { number: 4, state: 'OPEN' }], green('⇄')); // an open PR beats all
+  starts([], dim('·')); // no linked PR, no glyph
   console.log('ok');
 } else {
   main();

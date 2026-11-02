@@ -5,7 +5,8 @@ A dashboard pane for [Rex](https://www.superlogical.com/rex/docs). It shows:
 - **Fleet:** every Rex session and pane, with the status its program reports to Rex (working, blocked, done or idle), the task title, current activity and folder. Claude Code and omp report status; plain shells show dimmed.
 - **Usage:** Claude Code tokens by model over the last 30 days, with a daily sparkline, read from `~/.claude/projects`.
 - **Review requests:** up to 10 open PRs waiting on your review, across GitHub, with CI and review state.
-- **My PRs:** your open PRs, with CI, review and draft state.
+- **My PRs:** up to 10 of your open PRs, with CI, review and draft state.
+- **Issues:** open issues assigned to you, most recently updated first. Each shows its labels in their GitHub colours, then its author, assignees, comment count, milestone and linked PRs. A `⇄` marks an issue with a linked PR, one that would close it, coloured by the most active one: green open, yellow draft, magenta merged, dim closed.
 
 Keys: `j`/`k` or the arrow keys select an agent, Enter shows its pane in the Rex app, `s` cycles the shader, `e` cycles the effects, `r` refreshes, `q` quits.
 
@@ -14,7 +15,8 @@ Keys: `j`/`k` or the arrow keys select an agent, Enter shows its pane in the Rex
 Started inside a git repo, the dashboard shows only that repo, and its name appears in the header:
 
 - **Fleet:** panes whose working folder is in one of the repo's worktrees. In the bare-plus-worktrees layout (`<dir>/.bare`), anything under `<dir>` counts.
-- **PRs:** only PRs in the repo's GitHub repository, the one `gh` would use. A repo without a GitHub remote shows no PRs.
+- **PRs:** only PRs in the repo's GitHub repository, the one `gh` would use. A repo without a GitHub remote shows no PRs or issues.
+- **Issues:** every open issue in that GitHub repository, not just yours.
 - **Usage:** only Claude Code sessions started in the repo's folders.
 
 Started anywhere else, such as your home folder, it shows everything.
@@ -64,7 +66,7 @@ rex-dash --once   print one frame and exit
 rex-dash --test   run the self-check
 ```
 
-The fleet refreshes every 3 seconds, PRs every minute and usage every 5 minutes.
+The fleet refreshes every 3 seconds, PRs and issues every minute and usage every 5 minutes.
 
 ## Releasing
 
