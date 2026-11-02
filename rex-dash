@@ -3,11 +3,12 @@
 // program status), your open PRs and review requests, open issues, and 30
 // days of Claude Code token usage by model.
 //
-//   rex-dash          live dashboard ([j/k] select an agent, [enter] jump to its pane,
-//                     [s] cycle shader, [e] cycle effects, [r] refresh, [q] quit)
+//   rex-dash          live dashboard ([j/k] select an agent or issue, [enter] jump to the agent's pane
+//                     or open the issue's worktree with wt, [s] cycle shader, [e] cycle effects,
+//                     [r] refresh, [q] quit)
 //   rex-dash --once   print one frame and exit
 //   rex-dash --test   run the self-check
-const { execFile } = require('node:child_process');
+const { execFile, spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -102,7 +103,7 @@ function renderFleet(f) {
       if (!p.rec) { out.push(dim(`  · ${pad(plain(p.prog), 9)} ${tilde(p.cwd)}`)); continue; }
       const r = p.rec;
       const kind = r.state === 'blocked' && r.kind ? yellow(` (${plain(r.kind)})`) : '';
-      const [mark, title] = p.blockId === sel ? [cyan('▸ '), bold(plain(p.title || r.title))] : ['  ', plain(p.title || r.title)];
+      const [mark, title] = p.blockId === sel ? [MARK, bold(plain(p.title || r.title))] : ['  ', plain(p.title || r.title)];
       out.push(`${mark}${STATE[r.state] || STATE.idle}${kind} ${dim(pad(ago(r.updated_at), 3))} ${magenta(plain(r.effective_app || p.prog))}  ${title}`);
       out.push(dim(`              ${[plain(r.msg), tilde(p.cwd)].filter(Boolean).join(' · ')}`));
     }
@@ -176,8 +177,9 @@ const issueLines = (i) => {
     i.milestone && `milestone ${plain(i.milestone.title)}`,
     links.length && `pr ${links.map((p) => '#' + p.number).join(' ')}`,
   ].filter(Boolean).join(' · ');
+  const [mark, title] = issueKey(i) === sel ? [MARK, bold(plain(i.title))] : ['  ', plain(i.title)];
   return [
-    `  ${LINK[links[0]?.state] || dim('·')} ${blue(`${plain(i.repository.name)}#${i.number}`)} ${plain(i.title)} ${dim(ago(i.updatedAt))}`,
+    `${mark}${LINK[links[0]?.state] || dim('·')} ${blue(issueKey(i))} ${title} ${dim(ago(i.updatedAt))}`,
     `    ${[...i.labels.nodes.map(chip), dim(meta)].join(' ')}`,
   ];
 };
@@ -310,22 +312,31 @@ function paint(line, y, w, t) {
   return clip(s, w - 1) + rowBg + '\x1b[K';
 }
 
-// ---- jump: j/k pick an agent, enter shows its pane in the Rex app
-let sel = null, flash = null; // sel is a block ID, so it survives refreshes
+// ---- select: j/k pick an agent or an issue, enter jumps to the agent's pane or opens the issue's worktree
+const MARK = cyan('▸ ');
+let sel = null, flash = null; // sel is an agent's block ID or an issue's repo#number, so it survives refreshes
+let handedOver = false; // wt has the terminal: nothing draws or reads keys until it exits
 const agents = () => (state.fleet || []).flatMap((s) => s.panes).filter((p) => p.rec);
+const issueKey = (i) => `${plain(i.repository.name)}#${i.number}`;
 const say = (text) => { flash = { text, until: Date.now() + 4e3 }; draw(); };
 
 function move(d) {
-  const a = agents();
-  if (!a.length) return;
-  const i = a.findIndex((p) => p.blockId === sel);
-  sel = a[i < 0 ? 0 : Math.min(a.length - 1, Math.max(0, i + d))].blockId;
+  const keys = [...agents().map((p) => p.blockId), ...(state.issues?.nodes || []).map(issueKey)];
+  if (!keys.length) return;
+  const i = keys.indexOf(sel);
+  sel = keys[i < 0 ? 0 : Math.min(keys.length - 1, Math.max(0, i + d))];
   draw();
 }
 
-async function jump() {
+function open() {
   const p = agents().find((x) => x.blockId === sel);
-  if (!p) return say(dim('pick an agent with j/k first'));
+  if (p) return jump(p);
+  const i = state.issues?.nodes.find((x) => issueKey(x) === sel);
+  if (i) return worktree(i);
+  say(dim('pick an agent or issue with j/k first'));
+}
+
+async function jump(p) {
   try {
     // With several Rex apps connected, set REX_CLIENT to pick one.
     await sh('rex', ['do', 'session.select', `session_id=${p.sessionId}`, `window_id=${p.windowId}`]);
@@ -336,10 +347,33 @@ async function jump() {
   }
 }
 
+// `wt issue <number>` opens the issue's worktree by wt's rules: it offers the issue's <number>-* branches,
+// or a new one named in a prompt, creates the worktree, runs wt.setupCommand and opens the worktree's
+// session (in Rex, inside Rex). Its prompts and setup need the terminal, so the dashboard hands it over
+// until wt exits, and keeps what a failing wt printed on screen until a key.
+async function worktree(i) {
+  if (!repo) return say(dim('start rex-dash in the repo to open a worktree for its issue'));
+  handedOver = true;
+  process.stdin.setRawMode(false).pause();
+  process.stdout.write('\x1b[0m\x1b[?25h\x1b[?1049l');
+  const end = await new Promise((resolve) => spawn('wt', ['issue', String(i.number)], { stdio: 'inherit' })
+    .on('error', (error) => resolve({ error }))
+    .on('exit', (code, signal) => resolve({ code, signal })));
+  process.stdin.setRawMode(true).resume();
+  if (!end.error && end.code !== 0) {
+    process.stdout.write(`\n${dim(`wt ${end.signal ? `killed by ${end.signal}` : `exited with ${end.code}`} · press a key`)}`);
+    await new Promise((resolve) => process.stdin.once('data', resolve));
+  }
+  process.stdout.write('\x1b[?1049h\x1b[?25l');
+  handedOver = false;
+  repaint();
+  if (end.error) say(red(end.error.code === 'ENOENT' ? 'wt not found: brew install gugahoi/tap/wt' : plain(firstLine(end.error))));
+}
+
 function frame() {
   const section = (key, render, loading) =>
     state[key + 'Err'] ? [head(key.toUpperCase()), red('  ' + plain(state[key + 'Err']))] : state[key] ? render(state[key]) : [head(key.toUpperCase()), dim('  ' + loading)];
-  const keys = `${dim('[j/k] select  [⏎] jump  [s] shader')} ${shaded(fx.shader)}  ${dim('[e] fx')} ${shaded(fx.effect)}  ${dim('[r] refresh  [q] quit')}`;
+  const keys = `${dim('[j/k] select  [⏎] open  [s] shader')} ${shaded(fx.shader)}  ${dim('[e] fx')} ${shaded(fx.effect)}  ${dim('[r] refresh  [q] quit')}`;
   return [
     `${bold(shaded('REX // COCKPIT'))} ${dim('·')} ${repo ? `${bold(plain(repo.name))} ${dim('·')} ` : ''}${new Date().toString().slice(0, 21)}` +
       (flash && Date.now() < flash.until ? `  ${flash.text}` : ''),
@@ -351,11 +385,19 @@ function frame() {
   ].flatMap((l) => l.split('\n'));
 }
 
+// The rows that fit a screen h rows high, its last row left for the band. Below the title, keys and band,
+// rows scroll up as far as the selection's two lines need to show.
+function fit(rows, h) {
+  const at = rows.findIndex((l) => l.startsWith(MARK));
+  rows.splice(3, Math.min(at - 3, at + 2 - (h - 1))); // a negative count removes nothing
+  return rows.slice(0, h - 1);
+}
+
 let prev = []; // what each row last showed, so unchanged rows aren't resent
 function draw() {
-  if (ONCE) return;
+  if (ONCE || handedOver) return;
   const w = process.stdout.columns || 100, h = process.stdout.rows || 50, t = performance.now() / 1000;
-  const rows = frame().slice(0, h - 1);
+  const rows = fit(frame(), h);
   while (rows.length < h - 1) rows.push('');
   rows.push(BAND_UP);
   let out = '';
@@ -366,6 +408,7 @@ function draw() {
   });
   if (out) process.stdout.write(out);
 }
+const repaint = () => { prev = []; process.stdout.write('\x1b[2J'); draw(); };
 
 async function refresh(key, fn) {
   if (busy.has(key)) return;
@@ -386,17 +429,18 @@ async function main() {
   }
   const quit = () => { process.stdout.write('\x1b[0m\x1b[?25h\x1b[?1049l'); process.exit(0); };
   process.stdout.write('\x1b[?1049h\x1b[?25l');
-  process.on('SIGINT', quit).on('SIGTERM', quit).on('SIGHUP', quit);
-  process.stdout.on('resize', () => { prev = []; process.stdout.write('\x1b[2J'); draw(); });
+  process.on('SIGINT', () => handedOver || quit()).on('SIGTERM', quit).on('SIGHUP', quit); // Ctrl-C in wt's setup is wt's
+  process.stdout.on('resize', () => handedOver || repaint());
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true).resume().on('data', (chunk) => {
-      // Keys typed quickly can arrive in one chunk, so handle them one at a time.
+      // Keys typed quickly can arrive in one chunk, so handle them one at a time, until wt takes the terminal.
       for (const s of chunk.toString().match(/\x1b\[[A-D]|[\s\S]/g) || []) {
+        if (handedOver) break;
         if (s === 'q' || s === '\x03') quit();
         if (s === 'r') refreshAll();
         if (s === 'j' || s === '\x1b[B') move(1);
         if (s === 'k' || s === '\x1b[A') move(-1);
-        if (s === '\r') jump();
+        if (s === '\r') open();
         if (s === 's') { fx.shader = cycle(Object.keys(SHADERS), fx.shader); draw(); }
         if (s === 'e') { fx.effect = cycle(EFFECTS, fx.effect); draw(); }
       }
@@ -444,6 +488,14 @@ if (process.argv.includes('--test')) {
   starts(linked, yellow('⇄')); // a draft beats merged and closed PRs
   starts([...linked, { number: 4, state: 'OPEN' }], green('⇄')); // an open PR beats all
   starts([], dim('·')); // no linked PR, no glyph
+  sel = 'r#7';
+  assert.ok(issueLines(issue([]))[0].startsWith(MARK + dim('·'))); // the selected issue is marked
+  sel = null;
+  // Rows below the title, keys and band scroll up just enough for the selection's two lines to show.
+  const screen = ['title', 'keys', BAND, 'a', 'b', 'c', `${MARK}x`, 'y', 'z'];
+  assert.deepStrictEqual(fit([...screen], 8), ['title', 'keys', BAND, 'b', 'c', `${MARK}x`, 'y']);
+  assert.deepStrictEqual(fit([...screen], 6), ['title', 'keys', BAND, `${MARK}x`, 'y']);
+  assert.deepStrictEqual(fit(screen.map((l) => l.replace(MARK, '')), 6), ['title', 'keys', BAND, 'a', 'b']); // no selection, no scroll
   console.log('ok');
 } else {
   main();
