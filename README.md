@@ -1,6 +1,12 @@
 # rex-dash
 
-A dashboard pane for [Rex](https://www.superlogical.com/rex/docs). It shows:
+A dashboard pane for [Rex](https://www.superlogical.com/rex/docs).
+
+![rex-dash showing a fleet, token usage, review requests, PRs and issues](assets/rex-dash.png)
+
+*Dashboard in Rex with sample data.*
+
+It shows:
 
 - **Fleet:** every Rex session and pane, with the status its program reports to Rex (working, blocked, done or idle), the task title, current activity and folder. Claude Code and omp report status; plain shells show dimmed.
 - **Usage:** Claude Code tokens by model over the last 30 days, with a daily sparkline, read from `~/.claude/projects`.
