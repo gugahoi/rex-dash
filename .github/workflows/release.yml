@@ -1,112 +1,169 @@
 name: Release
 
-# Create a GitHub Release and update the Homebrew formula.
-# Trigger by pushing a version tag, e.g.:  git tag v1.0.0 && git push origin v1.0.0
-# Or run manually from the Actions tab, supplying a tag.
+# Build and test every platform before publishing a GitHub Release or the tap.
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to create (e.g. v1.0.0)'
+        description: 'Existing release tag (e.g. v1.8.0)'
         required: true
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
-  verify:
-    runs-on: macos-latest
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.ref.outputs.tag }}
+      sha: ${{ steps.ref.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Check out manual tag if it exists
-        if: github.event_name == 'workflow_dispatch'
+      - name: Resolve immutable release commit
+        id: ref
         env:
-          TAG: ${{ inputs.tag }}
+          TAG_INPUT: ${{ inputs.tag }}
         run: |
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            git checkout "${TAG}"
+          set -euo pipefail
+          TAG="${TAG_INPUT:-$GITHUB_REF_NAME}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo 'Release tag must be vX.Y.Z.' >&2
+            exit 1
           fi
+          SHA="$(git rev-parse -q --verify "refs/tags/${TAG}^{commit}")" || {
+            echo "Tag ${TAG} does not exist. Create and push it before running this workflow." >&2
+            exit 1
+          }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: prepare
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: actions/setup-node@v7
         with:
-          node-version: '20.1.0'
+          node-version: '24.21.0'
+      - run: npm ci
       - run: ./rex-dash --test
       - run: node --test test/*.test.js
       - run: ./scripts/test-package.sh --brew
 
-  release:
-    needs: verify
-    runs-on: ubuntu-latest
+  binaries:
+    needs: [prepare, verify]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15, platform: darwin-arm64 }
+          - { runner: macos-15-intel, platform: darwin-x64 }
+          - { runner: ubuntu-24.04-arm, platform: linux-arm64 }
+          - { runner: ubuntu-24.04, platform: linux-x64 }
+    runs-on: ${{ matrix.runner }}
     steps:
-      - name: Check out release tag
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
-
-      - name: Resolve release metadata
-        id: release
-        run: |
-          set -euo pipefail
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            TAG="${{ inputs.tag }}"
-          else
-            TAG="${GITHUB_REF_NAME}"
-          fi
-          if [[ ! "${TAG}" =~ ^v[0-9] ]]; then
-            echo "Release tag must start with v, for example v1.0.0." >&2
-            exit 1
-          fi
-          echo "tag=${TAG}" >>"${GITHUB_OUTPUT}"
-
-      - name: Check out manual tag if it exists
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          set -euo pipefail
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            git checkout "${TAG}"
-          else
-            echo "Tag ${TAG} does not exist yet; the release will create it from this commit."
-          fi
-
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: actions/setup-node@v7
         with:
-          node-version: lts/*
-
-      - name: Run self-check and tests
+          node-version: '24.21.0'
+      - run: npm ci
+      - name: Build and verify binary archive
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          PLATFORM: ${{ matrix.platform }}
         run: |
-          ./rex-dash --test
-          node --test test/*.test.js
+          set -euo pipefail
+          test "$(node -p 'process.platform + "-" + process.arch')" = "$PLATFORM"
+          ./scripts/build-binary.sh "$TAG" dist
+          (cd dist && ../scripts/sha256.sh -c "rex-dash-${TAG}-${PLATFORM}.tar.gz.sha256")
+          mkdir unpacked
+          tar -xzf "dist/rex-dash-${TAG}-${PLATFORM}.tar.gz" -C unpacked
+          ./scripts/test-binary.sh unpacked/rex-dash
+          REX_DASH_BIN="$PWD/unpacked/rex-dash" node --test test/cli.test.js
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rex-dash-${{ matrix.platform }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
 
-      - name: Publish GitHub Release
+  release:
+    needs: [prepare, binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rex-dash-*
+          path: dist
+          merge-multiple: true
+      - name: Validate assets and tag
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "refs/tags/${TAG}^{commit}")" = "$SHA"
+          for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
+            archive="rex-dash-${TAG}-${platform}.tar.gz"
+            test -s "dist/$archive"
+            test -s "dist/$archive.sha256"
+            (cd dist && ../scripts/sha256.sh -c "$archive.sha256")
+            tar -tzf "dist/$archive" | grep -qx rex-dash
+            tar -tzf "dist/$archive" | grep -qx LICENSE
+            tar -tzf "dist/$archive" | grep -qx NODE-LICENSE
+          done
+          test "$(find dist -type f | wc -l | tr -d ' ')" = 8
+      - name: Publish GitHub Release and attach binaries
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.release.outputs.tag }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
-          if gh release view "${TAG}" >/dev/null 2>&1; then
-            echo "Release ${TAG} already exists."
-          elif git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            gh release create "${TAG}" --title "${TAG}" --generate-notes
-          else
-            gh release create "${TAG}" --title "${TAG}" --generate-notes --target "${GITHUB_SHA}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
           fi
+          mkdir existing
+          for asset in dist/*.tar.gz dist/*.sha256; do
+            name="$(basename "$asset")"
+            if gh release download "$TAG" --pattern "$name" --dir existing >/dev/null 2>&1; then
+              cmp -s "existing/$name" "$asset" || {
+                echo "Existing asset $name differs; refusing to overwrite a published binary." >&2
+                exit 1
+              }
+            else
+              gh release upload "$TAG" "$asset"
+            fi
+          done
 
-      # After the release, so a manual run has created the tag the tarball is cut from.
-      - name: Compute tarball sha
-        id: tarball
-        env:
-          TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          set -euo pipefail
-          SHA256="$(curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz" | shasum -a 256 | cut -d ' ' -f 1)"
-          echo "sha256=${SHA256}" >>"${GITHUB_OUTPUT}"
-
+  homebrew:
+    needs: [prepare, release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rex-dash-*
+          path: dist
+          merge-multiple: true
       - name: Generate Homebrew tap token
         id: tap-token
         uses: actions/create-github-app-token@v3
@@ -115,21 +172,20 @@ jobs:
           private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
           owner: gugahoi
           repositories: homebrew-tap
-
       - name: Update Homebrew formula
         env:
           TAP_TOKEN: ${{ steps.tap-token.outputs.token }}
-          TAG: ${{ steps.release.outputs.tag }}
-          SHA256: ${{ steps.tarball.outputs.sha256 }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/gugahoi/homebrew-tap.git" homebrew-tap
-          ./scripts/write-formula.sh "${TAG}" "${SHA256}" homebrew-tap/Formula/rex-dash.rb
+          ./scripts/write-formula.sh "$TAG" dist homebrew-tap/Formula/rex-dash.rb
+          ruby -c homebrew-tap/Formula/rex-dash.rb
           git -C homebrew-tap config user.name "github-actions[bot]"
           git -C homebrew-tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git -C homebrew-tap add Formula/rex-dash.rb
           if git -C homebrew-tap diff --cached --quiet; then
-            echo "Homebrew formula is already up to date."
+            echo 'Homebrew formula is already up to date.'
           else
             git -C homebrew-tap commit -m "Update rex-dash formula to ${TAG}"
             git -C homebrew-tap push

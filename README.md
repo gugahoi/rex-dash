@@ -82,10 +82,11 @@ Both start at `aurora` and `bloom+scanlines`. The dashboard remembers the last o
 
 ## Requirements
 
-- Node 20.1 or later
 - `rex` on `PATH`
 - `gh`, logged in (`gh auth login`)
+- `git` for repo mode
 - [`wt`](https://github.com/gugahoi/wt) 1.5.0 or later, to open worktrees for PRs and issues (`brew install gugahoi/tap/wt`). With 1.4.0, issues work, but Enter on a PR opens wt's PR picker instead
+- Node 20.1 or later **only** when running from a source checkout, not for the release binary
 
 ## Install
 
@@ -93,15 +94,19 @@ Both start at `aurora` and `bloom+scanlines`. The dashboard remembers the last o
 brew install gugahoi/tap/rex-dash
 ```
 
-Homebrew installs Node and `gh`; `rex` comes with the Rex app.
+Homebrew installs `gh`, but not Node. `rex` comes with the Rex app. The formula installs a single executable with Node embedded; no `lib/` directory is required.
 
-Or clone the repository and symlink its entry point onto your `PATH`:
+Alternatively, download the `rex-dash-vX.Y.Z-<platform>.tar.gz` archive for your OS and architecture from the [GitHub Releases](https://github.com/gugahoi/rex-dash/releases) page (`darwin-arm64`, `darwin-x64`, `linux-arm64` or `linux-x64`). Check it against its `.sha256` asset, extract it, and put the `rex-dash` executable on your `PATH`. The archive also includes the project and embedded Node runtime licenses.
+
+macOS binaries are ad-hoc signed, **not notarized**. If Gatekeeper blocks a downloaded binary, first verify its checksum and source; then, if you trust it, remove quarantine from that binary with `xattr -d com.apple.quarantine /path/to/rex-dash`. This is a manual fallback, not an automatic installation step.
+
+To run from source instead, clone the repository and symlink its entry point onto your `PATH`:
 
 ```sh
 ln -s "$PWD/rex-dash" ~/.local/bin/rex-dash
 ```
 
-Keep `lib/` beside `rex-dash` in the clone; copying the executable alone will not work. The Homebrew formula installs both together and uses Homebrew's Node.
+Keep `lib/` beside `rex-dash` in the clone; copying the source entry point alone will not work. This route needs Node 20.1 or later.
 
 Open it beside your current pane. It starts in that pane's folder, so inside a repo it shows only that repo. Add `-c ~` to see everything:
 
@@ -123,15 +128,18 @@ The fleet refreshes every 3 seconds, PRs and issues every minute and usage every
 
 ## Development
 
-The executable is a small entry point. `lib/app.js` owns dashboard state and refreshes; `lib/integrations/` calls Rex, GitHub and wt; `lib/storage.js` and `lib/usage.js` manage persisted data; and `lib/ui/` handles the terminal view and input. There is no build step or runtime npm dependency.
+The source executable is a small entry point. `lib/app.js` owns dashboard state and refreshes; `lib/integrations/` calls Rex, GitHub and wt; `lib/storage.js` and `lib/usage.js` manage persisted data; and `lib/ui/` handles the terminal view and input. There is no runtime npm dependency. The release build uses Node 24, esbuild and postject **at build time** to bundle those modules into a single executable containing Node.
 
 ```sh
-./rex-dash --test            # installed, dependency-free smoke check
-node --test test/*.test.js    # full suite, including mocked CLI commands
-./scripts/test-package.sh    # test the committed source archive and formula
+./rex-dash --test                      # source self-check
+node --test test/*.test.js              # full suite, including mocked CLI commands
+npm ci                                  # install pinned build-only dependencies (Node 24)
+./scripts/build-binary.sh v0.0.0 dist   # build for this machine's OS and architecture
+./scripts/test-binary.sh dist/rex-dash  # smoke-test without Node on PATH or lib/
+./scripts/test-package.sh              # build archive and validate formula
 ```
 
-CI also installs and tests the generated formula on macOS with `./scripts/test-package.sh --brew`. This installs Homebrew Node if necessary; it refuses to replace an existing `rex-dash` installation.
+CI builds and tests all four native targets. It also installs and tests the generated formula on macOS with `./scripts/test-package.sh --brew`; this refuses to replace an existing `rex-dash` installation. The local formula test duplicates the host archive under other target names to test formula generation, but runs only the host binary.
 
 ## Releasing
 
@@ -139,4 +147,4 @@ CI also installs and tests the generated formula on macOS with `./scripts/test-p
 git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
-Or run the Release workflow from the Actions tab with a tag. Before publishing, it runs the tests and verifies a local Homebrew install from the committed source archive. It then creates the GitHub Release and writes `Formula/rex-dash.rb` in [gugahoi/homebrew-tap](https://github.com/gugahoi/homebrew-tap) with `scripts/write-formula.sh`.
+Or run the Release workflow from the Actions tab with an **existing, pushed** tag. It builds and tests macOS and Linux binaries for arm64 and x64 from that tag before publishing. The GitHub Release contains four archives and their SHA-256 files; only after upload does the workflow write the binary-based `Formula/rex-dash.rb` in [gugahoi/homebrew-tap](https://github.com/gugahoi/homebrew-tap) with `scripts/write-formula.sh`. Reruns refuse to overwrite a published asset if its bytes differ.
