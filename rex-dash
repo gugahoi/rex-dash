@@ -10,7 +10,7 @@
 //   rex-dash --test   run the self-check
 //
 // Each repo keeps a cache in ~/.cache/rex-dash, so the dashboard starts on the last data it saw and
-// refreshes from there.
+// refreshes from there. The shader and effects last picked are kept in ~/.local/state/rex-dash.
 const { execFile, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
@@ -85,20 +85,21 @@ let cacheDir = null;
 const cacheKey = (r) => !r ? 'all'
   : `${path.basename(r.roots[0]).replace(/[^\w.-]/g, '_')}-${crypto.createHash('sha1').update(r.roots[0]).digest('hex').slice(0, 8)}`;
 function readCache(name) {
-  try {
-    const c = JSON.parse(fs.readFileSync(path.join(cacheDir, name), 'utf8'));
-    return c.version === CACHE_VERSION ? c : null;
-  } catch { return null; }
+  const c = cacheDir && readJSON(path.join(cacheDir, name));
+  return c?.version === CACHE_VERSION ? c : null;
 }
-// Written to a temporary file and renamed, so two dashboards in one repo never leave a half-written file.
-function writeCache(name, data) {
-  if (!cacheDir) return;
-  const file = path.join(cacheDir, name), tmp = `${file}.${process.pid}`;
+const writeCache = (name, data) => cacheDir && writeJSON(path.join(cacheDir, name), { version: CACHE_VERSION, ...data });
+function readJSON(file) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+}
+// Written to a temporary file and renamed, so two dashboards never leave a half-written file.
+function writeJSON(file, data) {
+  const tmp = `${file}.${process.pid}`;
   try {
-    fs.mkdirSync(cacheDir, { recursive: true });
-    fs.writeFileSync(tmp, JSON.stringify({ version: CACHE_VERSION, ...data }));
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(tmp, JSON.stringify(data));
     fs.renameSync(tmp, file);
-  } catch { fs.rmSync(tmp, { force: true }); } // a cache that can't be saved only makes the next start slower
+  } catch { fs.rmSync(tmp, { force: true }); } // a file that can't be saved only makes the next start slower, or plainer
 }
 
 // ---- fleet: every pane in every Rex session (in the repo), with what its program reports
@@ -337,6 +338,15 @@ const BAND = '\x03', BAND_UP = '\x04'; // rows paint() draws as shader bands, gl
 const shaded = (s) => `\x01${s}\x02`; // text paint() colours with the shader
 const fx = { shader: ONCE ? 'off' : 'aurora', effect: ONCE ? 'off' : 'bloom+scanlines' };
 const cycle = (list, cur) => list[(list.indexOf(cur) + 1) % list.length];
+// The shader and effects last picked, for every dashboard in every repo. They're settings, not cache,
+// so they live in $XDG_STATE_HOME/rex-dash (~/.local/state/rex-dash). Names a version dropped are ignored.
+const SETTINGS = path.join(process.env.XDG_STATE_HOME || path.join(HOME, '.local', 'state'), 'rex-dash', 'settings.json');
+function loadFx(file = SETTINGS) {
+  const s = readJSON(file);
+  if (Object.keys(SHADERS).includes(s?.shader)) fx.shader = s.shader;
+  if (EFFECTS.includes(s?.effect)) fx.effect = s.effect;
+}
+const saveFx = (file = SETTINGS) => writeJSON(file, { shader: fx.shader, effect: fx.effect });
 
 // Turn one frame() row into what the terminal gets for row y of a w-wide screen.
 function paint(line, y, w, t) {
@@ -508,6 +518,7 @@ async function main() {
     save();
     return console.log(frame().map((l) => paint(l, 0, Infinity, 0)).join('\n'));
   }
+  loadFx(); // --once prints plain
   const quit = () => { save(); process.stdout.write('\x1b[0m\x1b[?25h\x1b[?1049l'); process.exit(0); };
   process.stdout.write('\x1b[?1049h\x1b[?25l');
   process.on('SIGINT', () => handedOver || quit()).on('SIGTERM', quit).on('SIGHUP', quit); // Ctrl-C in wt's setup is wt's
@@ -522,8 +533,8 @@ async function main() {
         if (s === 'j' || s === '\x1b[B') move(1);
         if (s === 'k' || s === '\x1b[A') move(-1);
         if (s === '\r') open();
-        if (s === 's') { fx.shader = cycle(Object.keys(SHADERS), fx.shader); draw(); }
-        if (s === 'e') { fx.effect = cycle(EFFECTS, fx.effect); draw(); }
+        if (s === 's') { fx.shader = cycle(Object.keys(SHADERS), fx.shader); saveFx(); draw(); }
+        if (s === 'e') { fx.effect = cycle(EFFECTS, fx.effect); saveFx(); draw(); }
       }
     });
   }
@@ -576,6 +587,17 @@ if (process.argv.includes('--test')) {
   assert.deepStrictEqual(usage(projects).models, [['claude-x', 1, 1]]); // read from the cache, not the emptied file
   repo = { roots: ['/r/a', '/r/b'] }; transcripts = null;
   assert.deepStrictEqual(usage(projects).models, []); // /r/b wasn't covered, so the file is read again
+  // The shader and effects picked come back in the next dashboard; unknown or missing ones change nothing.
+  const settings = path.join(tmp, 'state', 'settings.json');
+  Object.assign(fx, { shader: 'ember', effect: 'scanlines' });
+  saveFx(settings);
+  Object.assign(fx, { shader: 'aurora', effect: 'bloom+scanlines' });
+  loadFx(settings);
+  assert.deepStrictEqual(fx, { shader: 'ember', effect: 'scanlines' });
+  fs.writeFileSync(settings, JSON.stringify({ shader: 'toString', effect: ['bloom'] }));
+  loadFx(settings);
+  loadFx(path.join(tmp, 'none.json'));
+  assert.deepStrictEqual(fx, { shader: 'ember', effect: 'scanlines' });
   fs.rmSync(tmp, { recursive: true });
   repo = cacheDir = transcripts = null;
   assert.strictEqual(vis(clip(red('hello') + ' world', 3)), 'hel');
