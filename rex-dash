@@ -5,7 +5,7 @@
 //
 //   rex-dash          live dashboard ([j/k] select an agent, PR or issue, [enter] jump to the agent's pane
 //                     or open the PR's or issue's worktree with wt, [/] fuzzy-filter the lists, [s] cycle shader,
-//                     [e] cycle effects, [r] refresh, [q] quit)
+//                     [e] cycle effects, [o] open the PR or issue in the browser, [r] refresh, [q] quit)
 //   rex-dash --once   print one frame and exit
 //   rex-dash --test   run the self-check
 //
@@ -155,7 +155,7 @@ const prQuery = (scope) => `query {
   review: search(query: "is:pr is:open review-requested:@me archived:false sort:updated-desc${scope}", type: ISSUE, first: 30) { issueCount nodes { ...pr } }
 }
 fragment pr on PullRequest {
-  number title isDraft reviewDecision updatedAt repository { name }
+  number title url isDraft reviewDecision updatedAt repository { name }
   commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
 }`;
 async function prs() {
@@ -187,7 +187,7 @@ const issueQuery = (scope) => `query {
   issues: search(query: "is:issue is:open ${scope} archived:false sort:updated-desc", type: ISSUE, first: 30) { issueCount nodes { ...issue } }
 }
 fragment issue on Issue {
-  number title updatedAt repository { name } author { login } comments { totalCount } milestone { title }
+  number title url updatedAt repository { name } author { login } comments { totalCount } milestone { title }
   assignees(first: 5) { nodes { login } }
   labels(first: 10) { nodes { name color } }
   closedByPullRequestsReferences(first: 5, includeClosedPrs: true) { nodes { number state isDraft } }
@@ -506,6 +506,26 @@ function open() {
   return x.kind === 'agent' ? jump(x.item) : worktree(x.kind, x.item.number);
 }
 
+// The selected PR's or issue's page, or why there's none: data cached before URLs were fetched has no link
+// until it refreshes. Only web pages, since the opener would run anything else.
+function page() {
+  const x = selectable().find((y) => y.key === sel);
+  if (x?.kind !== 'pr' && x?.kind !== 'issue') return { why: 'pick a PR or issue with j/k first' };
+  if (!/^https?:\/\//.test(x.item.url || '')) return { why: 'no link yet: wait for the refresh' };
+  return { key: x.key, url: x.item.url };
+}
+
+// [o] opens the page in the browser, with the system's opener, on the machine rex-dash runs on.
+function browse() {
+  const p = page();
+  if (!p.url) return say(dim(p.why));
+  const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
+  spawn(opener, [p.url], { stdio: 'ignore' })
+    .on('error', (e) => say(red(e.code === 'ENOENT' ? `${opener} not found` : plain(firstLine(e)))))
+    .on('exit', (code) => code && say(red(`${opener} exited with ${code}`)));
+  say(green(`↗ ${plain(p.key)}`));
+}
+
 async function jump(p) {
   try {
     // With several Rex apps connected, set REX_CLIENT to pick one.
@@ -546,7 +566,7 @@ function frame() {
   const section = (key, render, loading) =>
     state[key + 'Err'] ? [head(key.toUpperCase()), red('  ' + plain(state[key + 'Err']))] : state[key] ? render(state[key]) : [head(key.toUpperCase()), dim('  ' + loading)];
   const keys = typing ? `${cyan('/')}${bold(plain(query))}${CURSOR}  ${dim('[⏎] keep  [esc] clear  [↑/↓] select')}`
-    : `${query ? `${cyan('/')}${bold(plain(query))}  ${dim('[esc] clear')}  ` : ''}${dim('[j/k] select  [⏎] open  [/] filter  [s] shader')} ${shaded(fx.shader)}  ${dim('[e] fx')} ${shaded(fx.effect)}  ${dim('[r] refresh  [q] quit')}`;
+    : `${query ? `${cyan('/')}${bold(plain(query))}  ${dim('[esc] clear')}  ` : ''}${dim('[j/k] select  [⏎] open  [o] browser  [/] filter  [s] shader')} ${shaded(fx.shader)}  ${dim('[e] fx')} ${shaded(fx.effect)}  ${dim('[r] refresh  [q] quit')}`;
   return [
     `${bold(shaded('REX // COCKPIT'))} ${dim('·')} ${repo ? `${bold(plain(repo.name))} ${dim('·')} ` : ''}${new Date().toString().slice(0, 21)}` +
       (stale.size ? `  ${dim(`cached ${ago(Math.min(...[...stale].map((k) => fetched[k])))}`)}` : '') +
@@ -591,6 +611,7 @@ function press(s) {
   if (typing) return filterKey(s);
   if (s === 'q' || s === '\x03') quit();
   if (s === 'r') refreshAll();
+  if (s === 'o') browse();
   if (s === 'j' || DOWN.includes(s)) move(1);
   if (s === 'k' || UP.includes(s)) move(-1);
   if (s === '\r') open();
@@ -791,12 +812,20 @@ if (process.argv.includes('--test')) {
   press('/'); press('\x7f');
   assert.strictEqual(typing, false); // backspace on an empty query leaves it
   // PRs are selectable too, the ones on screen, in screen order; a section showing an error has nothing to select.
-  const pr = (number) => ({ number, title: 'a pr', isDraft: false, reviewDecision: null, updatedAt: new Date().toISOString(), repository: { name: 'r' }, commits: { nodes: [] } });
+  const pr = (number) => ({ number, title: 'a pr', url: `https://github.com/o/r/pull/${number}`, isDraft: false, reviewDecision: null, updatedAt: new Date().toISOString(), repository: { name: 'r' }, commits: { nodes: [] } });
   state.prs = { review: { issueCount: 1, nodes: [pr(3)] }, mine: { issueCount: 12, nodes: Array.from({ length: 12 }, (_, k) => pr(20 + k)) } };
   assert.deepStrictEqual(selectable().map((x) => `${x.kind} ${x.key}`),
     ['agent b1', 'agent b2', 'pr r#3', ...Array.from({ length: 10 }, (_, k) => `pr r#${20 + k}`), 'issue r#7', 'issue r#8']);
   sel = 'r#3';
   assert.ok(prLine(pr(3)).startsWith(MARK) && !prLine(pr(20)).startsWith(MARK)); // the selected PR is marked
+  // o opens the selected PR's or issue's page: its GitHub URL, which data cached before URLs were fetched lacks.
+  assert.deepStrictEqual(page(), { key: 'r#3', url: 'https://github.com/o/r/pull/3' });
+  sel = 'r#7';
+  assert.deepStrictEqual(page(), { why: 'no link yet: wait for the refresh' });
+  state.issues.nodes[0].url = 'file:///etc/passwd';
+  assert.deepStrictEqual(page(), { why: 'no link yet: wait for the refresh' }); // only web pages
+  sel = 'b1';
+  assert.deepStrictEqual(page(), { why: 'pick a PR or issue with j/k first' });
   state.prsErr = 'offline';
   assert.deepStrictEqual(selectable().map((x) => x.kind), ['agent', 'agent', 'issue', 'issue']);
   delete state.fleet; delete state.issues; delete state.prs; delete state.prsErr; sel = null;
