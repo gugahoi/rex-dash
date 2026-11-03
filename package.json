@@ -1,0 +1,9 @@
+{
+  "name": "rex-dash",
+  "private": true,
+  "description": "Build tools for the single-file rex-dash executable",
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "postject": "1.0.0-alpha.6"
+  }
+}

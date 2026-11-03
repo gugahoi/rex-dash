@@ -5,6 +5,7 @@ const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const CLI = path.resolve(process.env.REX_DASH_BIN || path.join(__dirname, '..', 'rex-dash'));
 
 // Exercise the actual CLI with only Rex and GitHub stubbed. No live app, auth,
 // network, or Claude Code installation is required.
@@ -37,7 +38,7 @@ esac
 `);
   fs.writeFileSync(path.join(projects, 's.jsonl'), JSON.stringify({ timestamp: new Date().toISOString(), cwd: dir, message: { id: 'm', model: 'claude-x', usage: { output_tokens: 4 } } }));
   const link = path.join(bin, 'rex-dash');
-  fs.symlinkSync(path.join(__dirname, '..', 'rex-dash'), link);
+  fs.symlinkSync(CLI, link);
   const log = path.join(dir, 'calls');
   const env = { ...process.env, HOME: dir, XDG_CACHE_HOME: path.join(dir, 'cache'), XDG_STATE_HOME: path.join(dir, 'state'), CALL_LOG: log, PATH: `${bin}${path.delimiter}${process.env.PATH}` };
   assert.equal(execFileSync(link, ['--test'], { cwd: dir, env, encoding: 'utf8' }).trim(), 'ok');
@@ -76,7 +77,9 @@ esac
 `);
   const log = path.join(dir, 'queries');
   const env = { ...process.env, HOME: home, XDG_CACHE_HOME: path.join(dir, 'cache'), QUERY_LOG: log, PATH: `${bin}${path.delimiter}${process.env.PATH}` };
-  const output = execFileSync(process.execPath, [path.join(__dirname, '..', 'rex-dash'), '--once'], { cwd: repo, env, encoding: 'utf8' });
+  const output = process.env.REX_DASH_BIN
+    ? execFileSync(CLI, ['--once'], { cwd: repo, env, encoding: 'utf8' })
+    : execFileSync(process.execPath, [CLI, '--once'], { cwd: repo, env, encoding: 'utf8' });
   assert.ok(output.includes('owner/repo'));
   assert.equal(fs.readFileSync(log, 'utf8').match(/repo:owner\/repo/g).length, 3); // both PR searches and the issues search
   const caches = fs.readdirSync(path.join(dir, 'cache', 'rex-dash'));

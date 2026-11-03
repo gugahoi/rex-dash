@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node: ['20.1.0', 'lts/*']
+        node: ['20.1.0', '24.21.0']
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -20,13 +20,46 @@ jobs:
       - run: ./rex-dash --test
       - run: node --test test/*.test.js
       - run: for script in scripts/*.sh; do bash -n "$script"; done
-      - run: ./scripts/test-package.sh
 
-  homebrew:
-    runs-on: macos-latest
+  binary:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15, platform: darwin-arm64 }
+          - { runner: macos-15-intel, platform: darwin-x64 }
+          - { runner: ubuntu-24.04-arm, platform: linux-arm64 }
+          - { runner: ubuntu-24.04, platform: linux-x64 }
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: '20.1.0'
+          node-version: '24.21.0'
+      - run: npm ci
+      - run: ./scripts/build-binary.sh v0.0.0 dist
+      - run: ./scripts/test-binary.sh dist/rex-dash
+      - run: REX_DASH_BIN="$PWD/dist/rex-dash" node --test test/cli.test.js
+      - name: Test the actual archive
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          test "$(node -p 'process.platform + "-" + process.arch')" = "$PLATFORM"
+          (cd dist && ../scripts/sha256.sh -c "rex-dash-v0.0.0-${PLATFORM}.tar.gz.sha256")
+          mkdir unpacked
+          tar -xzf "dist/rex-dash-v0.0.0-${PLATFORM}.tar.gz" -C unpacked
+          ./scripts/test-binary.sh unpacked/rex-dash
+
+  homebrew:
+    strategy:
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.21.0'
+      - run: npm ci
       - run: ./scripts/test-package.sh --brew
