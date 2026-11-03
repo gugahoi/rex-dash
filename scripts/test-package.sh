@@ -9,9 +9,12 @@ if [[ $# -gt 1 || ( $# -eq 1 && "$1" != --brew ) ]]; then
 fi
 
 TMP="$(mktemp -d)"
+TAP="rex-dash-ci/package-$$"
+TAPPED=false
 INSTALLED=false
 cleanup() {
-  if [[ "$INSTALLED" == true ]]; then brew uninstall --formula "$TMP/rex-dash.rb"; fi
+  if [[ "$INSTALLED" == true ]]; then brew uninstall --formula "$TAP/rex-dash" || true; fi
+  if [[ "$TAPPED" == true ]]; then brew untap "$TAP" || true; fi
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -30,11 +33,15 @@ if [[ ${1:-} == --brew ]]; then
     echo 'rex-dash is already installed; refusing to replace it for a packaging test' >&2
     exit 1
   fi
-  # Point the *generated* formula at this local archive; exercise its actual
-  # install method without publishing a tag or modifying the tap.
+  # Point the *generated* formula at this local archive. Homebrew requires a
+  # formula to live in a tap, so use a disposable one, never the release tap.
   # shellcheck disable=SC2016 # Ruby, not the shell, expands #{...}.
   FORMULA_ARCHIVE="$ARCHIVE" ruby -pi -e '$_ = "  url \"file://#{ENV.fetch("FORMULA_ARCHIVE")}\"\n" if $_.strip.start_with?("url ")' "$TMP/rex-dash.rb"
-  HOMEBREW_NO_AUTO_UPDATE=1 brew install --formula --build-from-source "$TMP/rex-dash.rb"
+  HOMEBREW_NO_AUTO_UPDATE=1 brew tap-new --no-git "$TAP"
+  TAPPED=true
+  TAP_DIR="$(brew --repo "$TAP")"
+  cp "$TMP/rex-dash.rb" "$TAP_DIR/Formula/rex-dash.rb"
+  HOMEBREW_NO_AUTO_UPDATE=1 brew install --formula --build-from-source "$TAP/rex-dash"
   INSTALLED=true
-  HOMEBREW_NO_AUTO_UPDATE=1 brew test "$TMP/rex-dash.rb"
+  HOMEBREW_NO_AUTO_UPDATE=1 brew test "$TAP/rex-dash"
 fi
