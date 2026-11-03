@@ -89,11 +89,13 @@ brew install gugahoi/tap/rex-dash
 
 Homebrew installs Node and `gh`; `rex` comes with the Rex app.
 
-Or put `rex-dash` on your `PATH` yourself, for example:
+Or clone the repository and symlink its entry point onto your `PATH`:
 
 ```sh
 ln -s "$PWD/rex-dash" ~/.local/bin/rex-dash
 ```
+
+Keep `lib/` beside `rex-dash` in the clone; copying the executable alone will not work. The Homebrew formula installs both together and uses Homebrew's Node.
 
 Open it beside your current pane. It starts in that pane's folder, so inside a repo it shows only that repo. Add `-c ~` to see everything:
 
@@ -113,10 +115,22 @@ rex-dash --test   run the self-check
 
 The fleet refreshes every 3 seconds, PRs and issues every minute and usage every 5 minutes.
 
+## Development
+
+The executable is a small entry point. `lib/app.js` owns dashboard state and refreshes; `lib/integrations/` calls Rex, GitHub and wt; `lib/storage.js` and `lib/usage.js` manage persisted data; and `lib/ui/` handles the terminal view and input. There is no build step or runtime npm dependency.
+
+```sh
+./rex-dash --test            # installed, dependency-free smoke check
+node --test test/*.test.js    # full suite, including mocked CLI commands
+./scripts/test-package.sh    # test the committed source archive and formula
+```
+
+CI also installs and tests the generated formula on macOS with `./scripts/test-package.sh --brew`. This installs Homebrew Node if necessary; it refuses to replace an existing `rex-dash` installation.
+
 ## Releasing
 
 ```sh
 git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
-Or run the Release workflow from the Actions tab with a tag. It runs the self-check, creates the GitHub Release, and writes `Formula/rex-dash.rb` in [gugahoi/homebrew-tap](https://github.com/gugahoi/homebrew-tap) with `scripts/write-formula.sh`.
+Or run the Release workflow from the Actions tab with a tag. Before publishing, it runs the tests and verifies a local Homebrew install from the committed source archive. It then creates the GitHub Release and writes `Formula/rex-dash.rb` in [gugahoi/homebrew-tap](https://github.com/gugahoi/homebrew-tap) with `scripts/write-formula.sh`.

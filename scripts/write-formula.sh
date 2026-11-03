@@ -18,7 +18,8 @@ fi
 
 mkdir -p "$(dirname "$OUTPUT_FILE")"
 
-# Homebrew rewrites the #!/usr/bin/env node shebang to its own node at install time.
+# Keep the executable beside its CommonJS modules. A wrapper uses Homebrew's
+# Node directly, independent of PATH or shebang rewriting inside libexec.
 cat >"$OUTPUT_FILE" <<FORMULA
 class RexDash < Formula
   desc "Dashboard pane for Rex with agent fleet, PRs and Claude Code usage"
@@ -31,7 +32,12 @@ class RexDash < Formula
   depends_on "node"
 
   def install
-    bin.install "rex-dash"
+    libexec.install "rex-dash", "lib"
+    (bin/"rex-dash").write <<~SH
+      #!/bin/sh
+      exec "#{Formula["node"].opt_bin}/node" "#{libexec}/rex-dash" "\$@"
+    SH
+    chmod 0755, bin/"rex-dash"
   end
 
   test do

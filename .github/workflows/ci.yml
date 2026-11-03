@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ['20.1.0', 'lts/*']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+      - run: ./rex-dash --test
+      - run: node --test test/*.test.js
+      - run: for script in scripts/*.sh; do bash -n "$script"; done
+      - run: ./scripts/test-package.sh
+
+  homebrew:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20.1.0'
+      - run: ./scripts/test-package.sh --brew
