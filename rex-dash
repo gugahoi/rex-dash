@@ -4,8 +4,8 @@
 // days of Claude Code token usage by model.
 //
 //   rex-dash          live dashboard ([j/k] select an agent or issue, [enter] jump to the agent's pane
-//                     or open the issue's worktree with wt, [s] cycle shader, [e] cycle effects,
-//                     [r] refresh, [q] quit)
+//                     or open the issue's worktree with wt, [/] fuzzy-filter the lists, [s] cycle shader,
+//                     [e] cycle effects, [r] refresh, [q] quit)
 //   rex-dash --once   print one frame and exit
 //   rex-dash --test   run the self-check
 //
@@ -126,21 +126,26 @@ async function fleet() {
   })).then((all) => all.filter((s) => s.panes.length));
 }
 
+// A pane's rows: a status line and an activity line for a program that reports to Rex, one dim line otherwise.
+function paneLines(p) {
+  if (!p.rec) return [dim(`  · ${pad(plain(p.prog), 9)} ${tilde(p.cwd)}`)];
+  const r = p.rec;
+  const kind = r.state === 'blocked' && r.kind ? yellow(` (${plain(r.kind)})`) : '';
+  const [mark, title] = p.blockId === sel ? [MARK, bold(plain(p.title || r.title))] : ['  ', plain(p.title || r.title)];
+  return [
+    `${mark}${STATE[r.state] || STATE.idle}${kind} ${dim(pad(ago(r.updated_at), 3))} ${magenta(plain(r.effective_app || p.prog))}  ${title}`,
+    dim(`              ${[plain(r.msg), tilde(p.cwd)].filter(Boolean).join(' · ')}`),
+  ];
+}
+const paneSession = (p) => plain(p.session); // the filter matches it too
+
 function renderFleet(f) {
   const panes = f.flatMap((s) => s.panes);
   const n = (st) => panes.filter((p) => p.rec?.state === st).length;
-  const out = [head('FLEET', `${f.length} sessions · ${panes.length} panes · ${green(n('working') + ' working')} · ${yellow(n('blocked') + ' blocked')}`)];
-  for (const s of f) {
-    out.push(bold(plain(s.label)));
-    for (const p of s.panes) {
-      if (!p.rec) { out.push(dim(`  · ${pad(plain(p.prog), 9)} ${tilde(p.cwd)}`)); continue; }
-      const r = p.rec;
-      const kind = r.state === 'blocked' && r.kind ? yellow(` (${plain(r.kind)})`) : '';
-      const [mark, title] = p.blockId === sel ? [MARK, bold(plain(p.title || r.title))] : ['  ', plain(p.title || r.title)];
-      out.push(`${mark}${STATE[r.state] || STATE.idle}${kind} ${dim(pad(ago(r.updated_at), 3))} ${magenta(plain(r.effective_app || p.prog))}  ${title}`);
-      out.push(dim(`              ${[plain(r.msg), tilde(p.cwd)].filter(Boolean).join(' · ')}`));
-    }
-  }
+  const groups = f.map((s) => [s.label, shown(s.panes, paneLines, paneSession)]).filter(([, ps]) => ps.length);
+  const found = matches(groups.reduce((t, [, ps]) => t + ps.length, 0));
+  const out = [head('FLEET', `${f.length} sessions · ${panes.length} panes · ${green(n('working') + ' working')} · ${yellow(n('blocked') + ' blocked')}${found}`)];
+  for (const [label, ps] of groups) out.push(bold(plain(label)), ...ps.flatMap((x) => x.lines));
   return out;
 }
 
@@ -167,9 +172,11 @@ const prLine = (p) => {
 };
 
 function renderPRs(d) {
+  // the filter looks through all that were fetched, not just the 10 shown
+  const [review, mine] = [d.review, d.mine].map((l) => shown(l.nodes, (p) => [prLine(p)]));
   return [
-    head('REVIEW REQUESTS', `${d.review.issueCount} waiting on you`), ...d.review.nodes.slice(0, 10).map(prLine),
-    head('MY PRS', `${d.mine.issueCount} open`), ...d.mine.nodes.slice(0, 10).map(prLine),
+    head('REVIEW REQUESTS', `${d.review.issueCount} waiting on you${matches(review.length)}`), ...review.slice(0, 10).flatMap((x) => x.lines),
+    head('MY PRS', `${d.mine.issueCount} open${matches(mine.length)}`), ...mine.slice(0, 10).flatMap((x) => x.lines),
   ];
 }
 
@@ -219,7 +226,8 @@ const issueLines = (i) => {
 
 function renderIssues(d) {
   // last: overflow falls off the bottom
-  return [head('ISSUES', `${d.issueCount} ${repo ? 'open' : 'assigned to you'}`), ...d.nodes.flatMap(issueLines)];
+  const is = shown(d.nodes, issueLines);
+  return [head('ISSUES', `${d.issueCount} ${repo ? 'open' : 'assigned to you'}${matches(is.length)}`), ...is.flatMap((x) => x.lines)];
 }
 
 // ---- usage: Claude Code tokens by model, from ~/.claude/projects transcripts
@@ -373,6 +381,97 @@ function paint(line, y, w, t) {
   return clip(s, w - 1) + rowBg + '\x1b[K';
 }
 
+// ---- filter: [/] fuzzy-filters the lists, like fzf. Each of the query's space-separated terms must match
+// an item's text: its characters in order, not necessarily together. A term with a capital letter matches
+// case. Lists keep their order, matched characters are underlined, and while typing the selection goes to
+// the best match.
+let query = '', terms = [], typing = false;
+
+// Where term's characters appear in text, in order, scored as fzf does: more at word starts, the rest of a
+// run gets its first character's bonus, and gaps cost. From each place term's first character appears, it
+// takes the first stretch holding the rest, shortened from its end back, and keeps the best. null: none.
+function fuzzy(term, text) {
+  const hay = /\p{Lu}/u.test(term) ? text : text.toLowerCase();
+  let best = null;
+  for (let from = hay.indexOf(term[0]); from >= 0; from = hay.indexOf(term[0], from + 1)) {
+    let end = -1;
+    for (let i = 0, j = from; j < hay.length; j++) if (hay[j] === term[i] && ++i === term.length) { end = j; break; }
+    if (end < 0) break; // nor will any later start
+    const cols = [];
+    for (let i = term.length - 1, j = end; i >= 0; j--) if (hay[j] === term[i]) { cols.unshift(j); i--; }
+    const score = rate(text, cols);
+    if (!best || score > best.score) best = { score, cols };
+  }
+  return best;
+}
+function rate(text, cols) {
+  let score = 0, run = 0;
+  cols.forEach((j, k) => {
+    const prev = text[j - 1] ?? ' ', gap = k ? j - cols[k - 1] - 1 : 0;
+    const start = !/[\p{L}\p{N}]/u.test(prev) || (/\p{Ll}/u.test(prev) && /\p{Lu}/u.test(text[j])) ? 8 : 0;
+    const bonus = k && !gap ? Math.max(start, run, 4) : (run = start);
+    score += 16 + bonus * (k ? 1 : 2) - (gap ? 2 + gap : 0);
+  });
+  return score;
+}
+
+// An item's score, and the columns of its text that the terms matched; null when a term doesn't match.
+function match(text) {
+  let score = 0;
+  const cols = new Set();
+  for (const term of terms) {
+    const m = fuzzy(term, text);
+    if (!m) return null;
+    score += m.score;
+    m.cols.forEach((c) => cols.add(c));
+  }
+  return { score, cols };
+}
+
+// Underline the characters of a styled line that sit at text columns cols, the line starting at column at.
+function underline(line, cols, at) {
+  let out = '', n = at;
+  for (const part of line.split(ANSI)) {
+    if (ANSI.test(part)) { out += part; continue; }
+    for (const ch of part) { out += cols.has(n) ? `\x1b[4m${ch}\x1b[24m` : ch; n += ch.length; }
+  }
+  return out;
+}
+
+// The items of a list that the filter keeps, in order, each with its score and its lines(item), underlined
+// where they matched. The text matched is the lines', then hidden(item)'s, which isn't shown.
+function shown(items, lines, hidden = () => '') {
+  return items.flatMap((item) => {
+    const ls = lines(item);
+    if (!terms.length) return [{ item, score: 0, lines: ls }];
+    const m = match(`${vis(ls.join(' '))} ${hidden(item)}`);
+    let at = 0;
+    return m ? [{ item, score: m.score, lines: ls.map((l) => { const u = underline(l, m.cols, at); at += vis(l).length + 1; return u; }) }] : [];
+  });
+}
+const matches = (n) => (terms.length ? dim(` · ${n} match${n === 1 ? '' : 'es'}`) : '');
+
+function setQuery(q) {
+  query = q;
+  terms = q.split(' ').filter(Boolean);
+  const best = selectable().reduce((b, x) => (!b || x.score > b.score ? x : b), null); // the first of equals
+  if (terms.length && best) sel = best.key;
+}
+
+const DOWN = ['\x1b[B', '\x1bOB', '\x0e', '\n'], UP = ['\x1b[A', '\x1bOA', '\x10', '\x0b']; // arrows, ctrl-n/p, ctrl-j/k
+// While the filter is typed, keys edit it and the arrows select. Enter keeps it, esc or ctrl-c clears it,
+// and backspace on an empty query leaves it.
+function filterKey(s) {
+  if (s === '\r') typing = false;
+  else if (s === '\x1b' || s === '\x03') { typing = false; setQuery(''); }
+  else if (DOWN.includes(s)) move(1);
+  else if (UP.includes(s)) move(-1);
+  else if (s === '\x7f' || s === '\b') { if (query) setQuery([...query].slice(0, -1).join('')); else typing = false; }
+  else if (s === '\x15') setQuery(''); // ctrl-u
+  else if (s === '\x17') setQuery(query.replace(/\S*\s*$/, '')); // ctrl-w: the last word
+  else if (!/[\x00-\x1f\x7f-\x9f]/.test(s)) setQuery(query + s); // not other keys' escape codes
+}
+
 // ---- select: j/k pick an agent or an issue, enter jumps to the agent's pane or opens the issue's worktree
 const MARK = cyan('▸ ');
 let sel = null, flash = null; // sel is an agent's block ID or an issue's repo#number, so it survives refreshes
@@ -380,19 +479,24 @@ let handedOver = false; // wt has the terminal: nothing draws or reads keys unti
 const agents = () => (state.fleet || []).flatMap((s) => s.panes).filter((p) => p.rec);
 const issueKey = (i) => `${plain(i.repository.name)}#${i.number}`;
 const say = (text) => { flash = { text, until: Date.now() + 4e3 }; draw(); };
+const shownAgents = () => shown(agents(), paneLines, paneSession);
+const shownIssues = () => shown(state.issues?.nodes || [], issueLines);
+// What j/k select, in screen order: the agents and issues the filter keeps.
+const selectable = () => [
+  ...shownAgents().map((x) => ({ ...x, key: x.item.blockId })), ...shownIssues().map((x) => ({ ...x, key: issueKey(x.item) })),
+];
 
 function move(d) {
-  const keys = [...agents().map((p) => p.blockId), ...(state.issues?.nodes || []).map(issueKey)];
+  const keys = selectable().map((x) => x.key);
   if (!keys.length) return;
   const i = keys.indexOf(sel);
   sel = keys[i < 0 ? 0 : Math.min(keys.length - 1, Math.max(0, i + d))];
-  draw();
 }
 
 function open() {
-  const p = agents().find((x) => x.blockId === sel);
+  const p = shownAgents().find((x) => x.item.blockId === sel)?.item;
   if (p) return jump(p);
-  const i = state.issues?.nodes.find((x) => issueKey(x) === sel);
+  const i = shownIssues().find((x) => issueKey(x.item) === sel)?.item;
   if (i) return worktree(i);
   say(dim('pick an agent or issue with j/k first'));
 }
@@ -434,7 +538,8 @@ async function worktree(i) {
 function frame() {
   const section = (key, render, loading) =>
     state[key + 'Err'] ? [head(key.toUpperCase()), red('  ' + plain(state[key + 'Err']))] : state[key] ? render(state[key]) : [head(key.toUpperCase()), dim('  ' + loading)];
-  const keys = `${dim('[j/k] select  [⏎] open  [s] shader')} ${shaded(fx.shader)}  ${dim('[e] fx')} ${shaded(fx.effect)}  ${dim('[r] refresh  [q] quit')}`;
+  const keys = typing ? `${cyan('/')}${bold(plain(query))}${CURSOR}  ${dim('[⏎] keep  [esc] clear  [↑/↓] select')}`
+    : `${query ? `${cyan('/')}${bold(plain(query))}  ${dim('[esc] clear')}  ` : ''}${dim('[j/k] select  [⏎] open  [/] filter  [s] shader')} ${shaded(fx.shader)}  ${dim('[e] fx')} ${shaded(fx.effect)}  ${dim('[r] refresh  [q] quit')}`;
   return [
     `${bold(shaded('REX // COCKPIT'))} ${dim('·')} ${repo ? `${bold(plain(repo.name))} ${dim('·')} ` : ''}${new Date().toString().slice(0, 21)}` +
       (stale.size ? `  ${dim(`cached ${ago(Math.min(...[...stale].map((k) => fetched[k])))}`)}` : '') +
@@ -471,6 +576,23 @@ function draw() {
   if (out) process.stdout.write(out);
 }
 const repaint = () => { prev = []; process.stdout.write('\x1b[2J'); draw(); };
+const CURSOR = '\x1b[7m \x1b[27m'; // the filter's, as the terminal's is hidden
+
+const quit = () => { save(); process.stdout.write('\x1b[0m\x1b[?25h\x1b[?1049l'); process.exit(0); };
+// One key: a character, or an arrow's (or another key's) escape code. The caller draws.
+function press(s) {
+  if (typing) return filterKey(s);
+  if (s === 'q' || s === '\x03') quit();
+  if (s === 'r') refreshAll();
+  if (s === 'j' || DOWN.includes(s)) move(1);
+  if (s === 'k' || UP.includes(s)) move(-1);
+  if (s === '\r') open();
+  if (s === '/') typing = true; // a kept filter is edited
+  if (s === '\x1b') setQuery('');
+  if (s === 's') { fx.shader = cycle(Object.keys(SHADERS), fx.shader); saveFx(); }
+  if (s === 'e') { fx.effect = cycle(EFFECTS, fx.effect); saveFx(); }
+}
+const KEY = /\x1b\[[0-9;]*[~A-Za-z]|\x1bO[A-Za-z]|[\s\S]/gu;
 
 function refresh(key, fn) {
   if (!busy.has(key)) busy.set(key, (async () => {
@@ -519,23 +641,17 @@ async function main() {
     return console.log(frame().map((l) => paint(l, 0, Infinity, 0)).join('\n'));
   }
   loadFx(); // --once prints plain
-  const quit = () => { save(); process.stdout.write('\x1b[0m\x1b[?25h\x1b[?1049l'); process.exit(0); };
   process.stdout.write('\x1b[?1049h\x1b[?25l');
   process.on('SIGINT', () => handedOver || quit()).on('SIGTERM', quit).on('SIGHUP', quit); // Ctrl-C in wt's setup is wt's
   process.stdout.on('resize', () => handedOver || repaint());
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true).resume().on('data', (chunk) => {
-      // Keys typed quickly can arrive in one chunk, so handle them one at a time, until wt takes the terminal.
-      for (const s of chunk.toString().match(/\x1b\[[A-D]|[\s\S]/g) || []) {
+      // Keys typed quickly, or pasted, arrive in one chunk, so handle them one at a time, until wt takes the terminal.
+      for (const s of chunk.toString().match(KEY) || []) {
         if (handedOver) break;
-        if (s === 'q' || s === '\x03') quit();
-        if (s === 'r') refreshAll();
-        if (s === 'j' || s === '\x1b[B') move(1);
-        if (s === 'k' || s === '\x1b[A') move(-1);
-        if (s === '\r') open();
-        if (s === 's') { fx.shader = cycle(Object.keys(SHADERS), fx.shader); saveFx(); draw(); }
-        if (s === 'e') { fx.effect = cycle(EFFECTS, fx.effect); saveFx(); draw(); }
+        press(s);
       }
+      draw();
     });
   }
   draw();
@@ -629,6 +745,45 @@ if (process.argv.includes('--test')) {
   assert.deepStrictEqual(fit([...screen], 8), ['title', 'keys', BAND, 'b', 'c', `${MARK}x`, 'y']);
   assert.deepStrictEqual(fit([...screen], 6), ['title', 'keys', BAND, `${MARK}x`, 'y']);
   assert.deepStrictEqual(fit(screen.map((l) => l.replace(MARK, '')), 6), ['title', 'keys', BAND, 'a', 'b']); // no selection, no scroll
+  // Filter: a term's characters in order, in their best stretch; case only when the term has a capital.
+  assert.deepStrictEqual(fuzzy('ab', 'a xab').cols, [3, 4]);
+  assert.deepStrictEqual(fuzzy('ca', 'claude cache').cols, [7, 8]); // not the first c...a
+  assert.deepStrictEqual([fuzzy('ba', 'ab'), fuzzy('Ab', 'ab')], [null, null]);
+  assert.deepStrictEqual(fuzzy('ab', 'AB').cols, [0, 1]);
+  assert.ok(fuzzy('log', 'login page').score > fuzzy('log', 'catalog').score); // word starts beat the middle of words
+  assert.ok(fuzzy('fix', 'fix it').score > fuzzy('fix', 'f i x').score); // runs beat letters apart, even at word starts
+  setQuery('it fix'); // every term, in any order
+  assert.ok(match('fix it') && !match('fix'));
+  assert.strictEqual(underline(red('ab'), new Set([3]), 2), red('a\x1b[4mb\x1b[24m')); // columns count from where the line starts
+  assert.deepStrictEqual('a\x1b[Bb\x1b\x1b[3~é😀'.match(KEY), ['a', '\x1b[B', 'b', '\x1b', '\x1b[3~', 'é', '😀']); // keys, whole
+  // While typing, keys edit the query and the selection goes to the best match; the lists keep what matches.
+  const pane = (blockId, title, session) => ({ session, blockId, prog: 'pi', cwd: '/r', title, rec: { state: 'working', updated_at: new Date().toISOString() } });
+  state.fleet = [{ label: 'web', panes: [pane('b1', 'c-a-c-h-e rows', 'web')] }, { label: 'api', panes: [pane('b2', 'add auth', 'api')] }];
+  state.issues = { issueCount: 2, nodes: [issue([]), { ...issue([]), number: 8, title: 'add cache' }] };
+  setQuery('');
+  for (const s of '/jk') press(s);
+  assert.deepStrictEqual([typing, query], [true, 'jk']); // typed, not moves
+  press('\x15'); // ctrl-u
+  for (const s of 'cache') press(s);
+  assert.deepStrictEqual([selectable().map((x) => x.key), sel], [['b1', 'r#8'], 'r#8']); // the best match, not the first
+  press('\x1b[A'); // the arrows still select
+  assert.strictEqual(sel, 'b1');
+  press('\r');
+  press('j');
+  assert.deepStrictEqual([typing, query, sel], [false, 'cache', 'r#8']); // kept, and j moves among the matches
+  const found = renderIssues(state.issues);
+  assert.ok(vis(found[0]).endsWith('2 assigned to you · 1 match') && found.length === 3);
+  assert.ok(found[1].includes('\x1b[4mc\x1b[24m\x1b[4ma\x1b[24m')); // matched characters are underlined
+  assert.ok(!renderFleet(state.fleet).some((l) => vis(l) === 'api')); // a session with no matches goes
+  for (const s of '/\x7f\x7f\x7f\x7f\x7fapi') press(s);
+  assert.deepStrictEqual(selectable().map((x) => x.key), ['b2']); // a pane matches its session
+  press('\x1b');
+  assert.deepStrictEqual([typing, query, selectable().length], [false, '', 4]); // esc clears
+  for (const s of '/x\r\x1b') press(s);
+  assert.strictEqual(query, ''); // esc clears a kept filter too
+  press('/'); press('\x7f');
+  assert.strictEqual(typing, false); // backspace on an empty query leaves it
+  delete state.fleet; delete state.issues; sel = null;
   console.log('ok');
 } else {
   main();

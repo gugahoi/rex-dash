@@ -8,7 +8,27 @@ A dashboard pane for [Rex](https://www.superlogical.com/rex/docs). It shows:
 - **My PRs:** up to 10 of your open PRs, with CI, review and draft state.
 - **Issues:** open issues assigned to you, most recently updated first. Each shows its labels in their GitHub colours, then its author, assignees, comment count, milestone and linked PRs. A `⇄` marks an issue with a linked PR, one that would close it, coloured by the most active one: green open, yellow draft, magenta merged, dim closed.
 
-Keys: `j`/`k` or the arrow keys select an agent or an issue, scrolling the dashboard to keep the selection in view; `s` cycles the shader, `e` cycles the effects, `r` refreshes, `q` quits. Enter on an agent shows its pane in the Rex app. Enter on an issue opens a worktree for it.
+Keys: `j`/`k` or the arrow keys select an agent or an issue, scrolling the dashboard to keep the selection in view; `/` filters the lists; `s` cycles the shader, `e` cycles the effects, `r` refreshes, `q` quits. Enter on an agent shows its pane in the Rex app. Enter on an issue opens a worktree for it.
+
+## Filtering
+
+`/` starts a fuzzy filter, like [fzf](https://github.com/junegunn/fzf). As you type, the fleet, review requests, my PRs and issues keep only the items that match, in their usual order, with the matched characters underlined. Each heading counts its matches. Usage isn't filtered.
+
+- An item matches when the query's characters appear in its text in order, though not necessarily together: `fxlg` matches "fix login". An item's text is what its rows show. A pane's text also includes its session's name.
+- Spaces separate terms. An item must match every term, in any order.
+- A term with a capital letter matches case. Otherwise case doesn't matter.
+- While you type, the selection goes to the best match. Characters next to each other and at the start of words count most.
+
+While you type, letters go into the query, so keys such as `q` and `j` don't act. These keys work:
+
+| Key | Action |
+| --- | --- |
+| Enter | Keep the filter and go back to the usual keys, so `j`/`k` select among the matches |
+| Esc or Ctrl-C | Clear the filter |
+| ↑/↓, Ctrl-N/Ctrl-P | Select |
+| Backspace, Ctrl-W, Ctrl-U | Delete a character, a word or the whole query. Backspace on an empty query stops filtering |
+
+After Enter, `/` edits the filter and Esc clears it. PRs and issues are filtered from what the dashboard fetched, which is up to 30 of each.
 
 ## Opening an issue's worktree
 
