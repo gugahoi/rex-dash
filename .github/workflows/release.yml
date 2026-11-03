@@ -125,9 +125,12 @@ jobs:
             test -s "dist/$archive"
             test -s "dist/$archive.sha256"
             (cd dist && ../scripts/sha256.sh -c "$archive.sha256")
-            tar -tzf "dist/$archive" | grep -qx rex-dash
-            tar -tzf "dist/$archive" | grep -qx LICENSE
-            tar -tzf "dist/$archive" | grep -qx NODE-LICENSE
+            # Capture tar's full output before searching: grep -q in a pipe
+            # closes stdout early, causing tar to fail under pipefail.
+            entries="$(tar -tzf "dist/$archive")"
+            for required in rex-dash LICENSE NODE-LICENSE; do
+              grep -Fxq "$required" <<< "$entries"
+            done
           done
           test "$(find dist -type f | wc -l | tr -d ' ')" = 8
       - name: Publish GitHub Release and attach binaries
