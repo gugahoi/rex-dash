@@ -36,7 +36,7 @@ if [[ ${1:-} == --brew ]]; then
   # Point the *generated* formula at this local archive. Homebrew requires a
   # formula to live in a tap, so use a disposable one, never the release tap.
   # shellcheck disable=SC2016 # Ruby, not the shell, expands #{...}.
-  FORMULA_ARCHIVE="$ARCHIVE" ruby -pi -e '$_ = "  url \"file://#{ENV.fetch("FORMULA_ARCHIVE")}\"\n" if $_.strip.start_with?("url ")' "$TMP/rex-dash.rb"
+  FORMULA_ARCHIVE="$ARCHIVE" ruby -pi -e '$_ = "  url \"file://#{ENV.fetch("FORMULA_ARCHIVE")}\"\n  version \"0.0.0\"\n" if $_.strip.start_with?("url ")' "$TMP/rex-dash.rb"
   HOMEBREW_NO_AUTO_UPDATE=1 brew tap-new --no-git "$TAP"
   TAPPED=true
   TAP_DIR="$(brew --repo "$TAP")"
