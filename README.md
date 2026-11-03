@@ -8,7 +8,7 @@ A dashboard pane for [Rex](https://www.superlogical.com/rex/docs). It shows:
 - **My PRs:** up to 10 of your open PRs, with CI, review and draft state.
 - **Issues:** open issues assigned to you, most recently updated first. Each shows its labels in their GitHub colours, then its author, assignees, comment count, milestone and linked PRs. A `⇄` marks an issue with a linked PR, one that would close it, coloured by the most active one: green open, yellow draft, magenta merged, dim closed.
 
-Keys: `j`/`k` or the arrow keys select an agent or an issue, scrolling the dashboard to keep the selection in view; `/` filters the lists; `s` cycles the shader, `e` cycles the effects, `r` refreshes, `q` quits. Enter on an agent shows its pane in the Rex app. Enter on an issue opens a worktree for it.
+Keys: `j`/`k` or the arrow keys select an agent, a PR or an issue, scrolling the dashboard to keep the selection in view; `/` filters the lists; `s` cycles the shader, `e` cycles the effects, `r` refreshes, `q` quits. Enter on an agent shows its pane in the Rex app. Enter on a PR or an issue opens a worktree for it.
 
 ## Filtering
 
@@ -30,9 +30,16 @@ While you type, letters go into the query, so keys such as `q` and `j` don't act
 
 After Enter, `/` edits the filter and Esc clears it. PRs and issues are filtered from what the dashboard fetched, which is up to 30 of each.
 
-## Opening an issue's worktree
+## Opening a worktree for a PR or an issue
 
-Enter on an issue runs [`wt issue <number>`](https://github.com/gugahoi/wt) in the repo, which applies wt's usual rules. It offers the issue's existing `<number>-*` branches, or a new branch named in a prompt that's prefilled from the issue's title. Then it creates the worktree, runs `wt.setupCommand`, and opens the worktree in its own session (in Rex, inside Rex) with wt's `default_command`. While wt runs, it has the dashboard's pane. When wt finishes, the dashboard comes back. If wt fails, its messages stay on screen until you press a key.
+Enter on a PR or an issue runs [wt](https://github.com/gugahoi/wt) in the repo, which applies its usual rules:
+
+- **PR:** `wt pr <number>` switches to the PR's branch. If there's no local branch yet, wt fetches it from GitHub. A PR from a fork is fetched as `pr-<number>`.
+- **Issue:** `wt issue <number>` offers the issue's existing `<number>-*` branches, or a new branch named in a prompt that's prefilled from the issue's title.
+
+Then wt creates the worktree, runs `wt.setupCommand`, and opens the worktree in its own session (in Rex, inside Rex) with wt's `default_command`. While wt runs, it has the dashboard's pane. When wt finishes, the dashboard comes back. If wt fails, its messages stay on screen until you press a key.
+
+You can select only the PRs on screen, up to 10 in each list. To reach others, filter for them.
 
 This needs repo mode, since wt works on the repo it runs in.
 
@@ -72,7 +79,7 @@ Both start at `aurora` and `bloom+scanlines`. The dashboard remembers the last o
 - Node 20.1 or later
 - `rex` on `PATH`
 - `gh`, logged in (`gh auth login`)
-- [`wt`](https://github.com/gugahoi/wt) 1.4.0 or later, to open issues' worktrees (`brew install gugahoi/tap/wt`)
+- [`wt`](https://github.com/gugahoi/wt) 1.5.0 or later, to open worktrees for PRs and issues (`brew install gugahoi/tap/wt`). With 1.4.0, issues work, but Enter on a PR opens wt's PR picker instead
 
 ## Install
 

@@ -3,8 +3,8 @@
 // program status), your open PRs and review requests, open issues, and 30
 // days of Claude Code token usage by model.
 //
-//   rex-dash          live dashboard ([j/k] select an agent or issue, [enter] jump to the agent's pane
-//                     or open the issue's worktree with wt, [/] fuzzy-filter the lists, [s] cycle shader,
+//   rex-dash          live dashboard ([j/k] select an agent, PR or issue, [enter] jump to the agent's pane
+//                     or open the PR's or issue's worktree with wt, [/] fuzzy-filter the lists, [s] cycle shader,
 //                     [e] cycle effects, [r] refresh, [q] quit)
 //   rex-dash --once   print one frame and exit
 //   rex-dash --test   run the self-check
@@ -168,15 +168,17 @@ const REVIEW = { APPROVED: green('approved'), CHANGES_REQUESTED: red('changes'),
 const prLine = (p) => {
   const ci = CI[p.commits.nodes[0]?.commit.statusCheckRollup?.state] || dim('·');
   const tag = p.isDraft ? dim('draft') : REVIEW[p.reviewDecision] || dim('open');
-  return `  ${ci} ${pad(tag, 8)} ${blue(`${plain(p.repository.name)}#${p.number}`)} ${plain(p.title)} ${dim(ago(p.updatedAt))}`;
+  const [mark, title] = ghKey(p) === sel ? [MARK, bold(plain(p.title))] : ['  ', plain(p.title)];
+  return `${mark}${ci} ${pad(tag, 8)} ${blue(ghKey(p))} ${title} ${dim(ago(p.updatedAt))}`;
 };
+const PR_ROWS = 10; // per list; the filter looks through all that were fetched
+const shownPRs = (list) => shown(list.nodes, (p) => [prLine(p)]);
 
 function renderPRs(d) {
-  // the filter looks through all that were fetched, not just the 10 shown
-  const [review, mine] = [d.review, d.mine].map((l) => shown(l.nodes, (p) => [prLine(p)]));
+  const [review, mine] = [d.review, d.mine].map(shownPRs);
   return [
-    head('REVIEW REQUESTS', `${d.review.issueCount} waiting on you${matches(review.length)}`), ...review.slice(0, 10).flatMap((x) => x.lines),
-    head('MY PRS', `${d.mine.issueCount} open${matches(mine.length)}`), ...mine.slice(0, 10).flatMap((x) => x.lines),
+    head('REVIEW REQUESTS', `${d.review.issueCount} waiting on you${matches(review.length)}`), ...review.slice(0, PR_ROWS).flatMap((x) => x.lines),
+    head('MY PRS', `${d.mine.issueCount} open${matches(mine.length)}`), ...mine.slice(0, PR_ROWS).flatMap((x) => x.lines),
   ];
 }
 
@@ -217,9 +219,9 @@ const issueLines = (i) => {
     i.milestone && `milestone ${plain(i.milestone.title)}`,
     links.length && `pr ${links.map((p) => '#' + p.number).join(' ')}`,
   ].filter(Boolean).join(' · ');
-  const [mark, title] = issueKey(i) === sel ? [MARK, bold(plain(i.title))] : ['  ', plain(i.title)];
+  const [mark, title] = ghKey(i) === sel ? [MARK, bold(plain(i.title))] : ['  ', plain(i.title)];
   return [
-    `${mark}${LINK[links[0]?.state] || dim('·')} ${blue(issueKey(i))} ${title} ${dim(ago(i.updatedAt))}`,
+    `${mark}${LINK[links[0]?.state] || dim('·')} ${blue(ghKey(i))} ${title} ${dim(ago(i.updatedAt))}`,
     `    ${[...i.labels.nodes.map(chip), dim(meta)].join(' ')}`,
   ];
 };
@@ -472,18 +474,23 @@ function filterKey(s) {
   else if (!/[\x00-\x1f\x7f-\x9f]/.test(s)) setQuery(query + s); // not other keys' escape codes
 }
 
-// ---- select: j/k pick an agent or an issue, enter jumps to the agent's pane or opens the issue's worktree
+// ---- select: j/k pick an agent, PR or issue; enter jumps to the agent's pane or opens the PR's or issue's worktree
 const MARK = cyan('▸ ');
-let sel = null, flash = null; // sel is an agent's block ID or an issue's repo#number, so it survives refreshes
+let sel = null, flash = null; // sel is an agent's block ID or a PR's or issue's repo#number, so it survives refreshes
 let handedOver = false; // wt has the terminal: nothing draws or reads keys until it exits
-const agents = () => (state.fleet || []).flatMap((s) => s.panes).filter((p) => p.rec);
-const issueKey = (i) => `${plain(i.repository.name)}#${i.number}`;
+const showing = (key) => (state[key + 'Err'] ? null : state[key]); // a section's data, unless it shows an error
+const agents = () => (showing('fleet') || []).flatMap((s) => s.panes).filter((p) => p.rec);
+// A PR's or issue's repo#number, unique since a repo's PRs and issues share one number sequence.
+const ghKey = (i) => `${plain(i.repository.name)}#${i.number}`;
 const say = (text) => { flash = { text, until: Date.now() + 4e3 }; draw(); };
 const shownAgents = () => shown(agents(), paneLines, paneSession);
-const shownIssues = () => shown(state.issues?.nodes || [], issueLines);
-// What j/k select, in screen order: the agents and issues the filter keeps.
+const shownIssues = () => shown(showing('issues')?.nodes || [], issueLines);
+// What j/k select, in screen order: the agents, PRs and issues on screen that the filter keeps.
 const selectable = () => [
-  ...shownAgents().map((x) => ({ ...x, key: x.item.blockId })), ...shownIssues().map((x) => ({ ...x, key: issueKey(x.item) })),
+  ...shownAgents().map((x) => ({ ...x, kind: 'agent', key: x.item.blockId })),
+  ...[showing('prs')?.review, showing('prs')?.mine].filter(Boolean).flatMap((l) => shownPRs(l).slice(0, PR_ROWS))
+    .map((x) => ({ ...x, kind: 'pr', key: ghKey(x.item) })),
+  ...shownIssues().map((x) => ({ ...x, kind: 'issue', key: ghKey(x.item) })),
 ];
 
 function move(d) {
@@ -494,11 +501,9 @@ function move(d) {
 }
 
 function open() {
-  const p = shownAgents().find((x) => x.item.blockId === sel)?.item;
-  if (p) return jump(p);
-  const i = shownIssues().find((x) => issueKey(x.item) === sel)?.item;
-  if (i) return worktree(i);
-  say(dim('pick an agent or issue with j/k first'));
+  const x = selectable().find((y) => y.key === sel);
+  if (!x) return say(dim('pick an agent, PR or issue with j/k first'));
+  return x.kind === 'agent' ? jump(x.item) : worktree(x.kind, x.item.number);
 }
 
 async function jump(p) {
@@ -512,16 +517,18 @@ async function jump(p) {
   }
 }
 
-// `wt issue <number>` opens the issue's worktree by wt's rules: it offers the issue's <number>-* branches,
-// or a new one named in a prompt, creates the worktree, runs wt.setupCommand and opens the worktree's
-// session (in Rex, inside Rex). Its prompts and setup need the terminal, so the dashboard hands it over
-// until wt exits, and keeps what a failing wt printed on screen until a key.
-async function worktree(i) {
-  if (!repo) return say(dim('start rex-dash in the repo to open a worktree for its issue'));
+// `wt issue <number>` and `wt pr <number>` open the issue's or PR's worktree by wt's rules. For an issue, wt
+// offers its <number>-* branches, or a new one named in a prompt; for a PR, it takes the PR's branch, fetched
+// from GitHub when there's no local one (a fork's as pr-<number>). Then it creates the worktree, runs
+// wt.setupCommand and opens the worktree's session (in Rex, inside Rex). Its prompts and setup need the
+// terminal, so the dashboard hands it over until wt exits, and keeps what a failing wt printed on screen
+// until a key. kind: 'issue' or 'pr'.
+async function worktree(kind, number) {
+  if (!repo) return say(dim(`start rex-dash in the repo to open a worktree for its ${kind === 'pr' ? 'PR' : 'issue'}`));
   handedOver = true;
   process.stdin.setRawMode(false).pause();
   process.stdout.write('\x1b[0m\x1b[?25h\x1b[?1049l');
-  const end = await new Promise((resolve) => spawn('wt', ['issue', String(i.number)], { stdio: 'inherit' })
+  const end = await new Promise((resolve) => spawn('wt', [kind, String(number)], { stdio: 'inherit' })
     .on('error', (error) => resolve({ error }))
     .on('exit', (code, signal) => resolve({ code, signal })));
   process.stdin.setRawMode(true).resume();
@@ -783,7 +790,16 @@ if (process.argv.includes('--test')) {
   assert.strictEqual(query, ''); // esc clears a kept filter too
   press('/'); press('\x7f');
   assert.strictEqual(typing, false); // backspace on an empty query leaves it
-  delete state.fleet; delete state.issues; sel = null;
+  // PRs are selectable too, the ones on screen, in screen order; a section showing an error has nothing to select.
+  const pr = (number) => ({ number, title: 'a pr', isDraft: false, reviewDecision: null, updatedAt: new Date().toISOString(), repository: { name: 'r' }, commits: { nodes: [] } });
+  state.prs = { review: { issueCount: 1, nodes: [pr(3)] }, mine: { issueCount: 12, nodes: Array.from({ length: 12 }, (_, k) => pr(20 + k)) } };
+  assert.deepStrictEqual(selectable().map((x) => `${x.kind} ${x.key}`),
+    ['agent b1', 'agent b2', 'pr r#3', ...Array.from({ length: 10 }, (_, k) => `pr r#${20 + k}`), 'issue r#7', 'issue r#8']);
+  sel = 'r#3';
+  assert.ok(prLine(pr(3)).startsWith(MARK) && !prLine(pr(20)).startsWith(MARK)); // the selected PR is marked
+  state.prsErr = 'offline';
+  assert.deepStrictEqual(selectable().map((x) => x.kind), ['agent', 'agent', 'issue', 'issue']);
+  delete state.fleet; delete state.issues; delete state.prs; delete state.prsErr; sel = null;
   console.log('ok');
 } else {
   main();
