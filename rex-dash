@@ -8,7 +8,11 @@
 //                     [r] refresh, [q] quit)
 //   rex-dash --once   print one frame and exit
 //   rex-dash --test   run the self-check
+//
+// Each repo keeps a cache in ~/.cache/rex-dash, so the dashboard starts on the last data it saw and
+// refreshes from there.
 const { execFile, spawn } = require('node:child_process');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -53,6 +57,7 @@ function clip(s, w) {
 // ---- repo: started inside a git repo, the cockpit shows only that repo.
 // The repo's roots are its worktrees' folders. In the bare-plus-worktrees
 // layout (<dir>/.bare) <dir> is a root too, so worktrees made later count.
+// githubName() finds the GitHub name separately, since gh needs a network round trip for it.
 let repo = null; // { roots, gh: 'owner/name' or null, name }
 async function detectRepo(dir) {
   let list;
@@ -64,10 +69,37 @@ async function detectRepo(dir) {
     const root = /^bare$/m.test(entry) && path.basename(p) === '.bare' ? path.dirname(p) : p;
     try { roots.push(fs.realpathSync(root)); } catch { roots.push(root); } // /tmp is /private/tmp on macOS
   }
-  const gh = await sh('gh', ['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], { cwd: dir }).then((s) => s.trim(), () => null);
-  return { roots, gh, name: gh || path.basename(roots[0]) };
+  return { roots, gh: null, name: path.basename(roots[0]) };
 }
-const inRepo = (p) => !repo || (!!p && repo.roots.some((r) => p === r || p.startsWith(r + '/')));
+const githubName = (dir) => sh('gh', ['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], { cwd: dir }).then((s) => s.trim(), () => null);
+const named = (gh) => Object.assign(repo, { gh, name: gh || path.basename(repo.roots[0]) });
+const within = (roots, p) => !!p && roots.some((r) => p === r || p.startsWith(r + '/'));
+const inRepo = (p) => !repo || within(repo.roots, p);
+
+// ---- cache: each repo has its own folder in $XDG_CACHE_HOME/rex-dash (~/.cache/rex-dash), and so does
+// everything, outside a repo. It holds the last sections, the repo's GitHub name and the usage rows read
+// from transcripts, so a new dashboard shows the last data at once and refreshes it in the background.
+const CACHE = path.join(process.env.XDG_CACHE_HOME || path.join(HOME, '.cache'), 'rex-dash'), CACHE_VERSION = 1;
+let cacheDir = null;
+// Every worktree of a repo lists the same first root, so they share a folder.
+const cacheKey = (r) => !r ? 'all'
+  : `${path.basename(r.roots[0]).replace(/[^\w.-]/g, '_')}-${crypto.createHash('sha1').update(r.roots[0]).digest('hex').slice(0, 8)}`;
+function readCache(name) {
+  try {
+    const c = JSON.parse(fs.readFileSync(path.join(cacheDir, name), 'utf8'));
+    return c.version === CACHE_VERSION ? c : null;
+  } catch { return null; }
+}
+// Written to a temporary file and renamed, so two dashboards in one repo never leave a half-written file.
+function writeCache(name, data) {
+  if (!cacheDir) return;
+  const file = path.join(cacheDir, name), tmp = `${file}.${process.pid}`;
+  try {
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(tmp, JSON.stringify({ version: CACHE_VERSION, ...data }));
+    fs.renameSync(tmp, file);
+  } catch { fs.rmSync(tmp, { force: true }); } // a cache that can't be saved only makes the next start slower
+}
 
 // ---- fleet: every pane in every Rex session (in the repo), with what its program reports
 const RANK = { blocked: 0, error: 1, working: 2, done: 3, idle: 4 };
@@ -222,20 +254,38 @@ function aggregate(rowLists, now = Date.now(), keep = inRepo) {
   return { models: Object.values(models).sort((a, b) => b[1] - a[1]), daily: days.map((d) => daily[d]) };
 }
 
-const fileCache = new Map(); // path -> { mtimeMs, rows }; only changed transcripts are reread
-function usage() {
-  const since = Date.now() - DAYS * 864e5, lists = [];
-  for (const rel of fs.readdirSync(PROJECTS, { recursive: true })) {
+// The rows of a transcript worth keeping: in the repo, not before the window's first day (which only
+// moves on), and each message once. aggregate() counts the same rows from these as from all of them.
+function cacheRows(rows, first) {
+  const seen = new Set();
+  return rows.filter(([id, , day, , , cwd]) => day >= first && inRepo(cwd) && !seen.has(id) && seen.add(id));
+}
+
+// path -> [mtimeMs, rows]: only changed transcripts are reread, and the rows are saved for the next
+// dashboard. Rows saved for roots that cover the repo's still hold; a root outside them means reading again.
+let transcripts = null;
+function usage(dir = PROJECTS) {
+  const now = Date.now(), since = now - DAYS * 864e5, first = new Date(now - (DAYS - 1) * 864e5).toISOString().slice(0, 10);
+  if (!transcripts) {
+    const c = readCache('transcripts.json');
+    transcripts = new Map(c && (!repo || repo.roots.every((r) => within(c.roots || [], r))) ? Object.entries(c.files) : []);
+  }
+  const next = new Map(), lists = [];
+  let reread = false;
+  for (const rel of fs.readdirSync(dir, { recursive: true })) {
     if (!rel.endsWith('.jsonl')) continue;
-    const file = path.join(PROJECTS, rel);
+    const file = path.join(dir, rel);
     let st;
     try { st = fs.statSync(file); } catch { continue; }
     if (st.mtimeMs < since) continue;
-    let hit = fileCache.get(file);
-    if (!hit || hit.mtimeMs !== st.mtimeMs) fileCache.set(file, (hit = { mtimeMs: st.mtimeMs, rows: parseUsage(fs.readFileSync(file, 'utf8')) }));
-    lists.push(hit.rows);
+    let hit = transcripts.get(file);
+    if (!hit || hit[0] !== st.mtimeMs) { hit = [st.mtimeMs, cacheRows(parseUsage(fs.readFileSync(file, 'utf8')), first)]; reread = true; }
+    next.set(file, hit);
+    lists.push(hit[1]);
   }
-  return aggregate(lists);
+  if (reread || next.size !== transcripts.size) writeCache('transcripts.json', { roots: repo?.roots, files: Object.fromEntries(next) });
+  transcripts = next; // transcripts gone, or out of the window, drop out
+  return aggregate(lists, now);
 }
 
 const SPARK = ' ▁▂▃▄▅▆▇█';
@@ -250,7 +300,8 @@ function renderUsage(u) {
 }
 
 // ---- screen
-const state = {}, busy = new Set();
+const state = {}, busy = new Map(); // busy: section -> its refresh in flight
+const fetched = {}, stale = new Set(); // when each section was fetched; the sections still showing cached data
 const head = (title, extra = '') => `\n${bold(shaded(title))}  ${extra}`;
 const firstLine = (e) => String(e.message || e).trim().split('\n')[0];
 const ONCE = process.argv.includes('--once');
@@ -376,6 +427,7 @@ function frame() {
   const keys = `${dim('[j/k] select  [⏎] open  [s] shader')} ${shaded(fx.shader)}  ${dim('[e] fx')} ${shaded(fx.effect)}  ${dim('[r] refresh  [q] quit')}`;
   return [
     `${bold(shaded('REX // COCKPIT'))} ${dim('·')} ${repo ? `${bold(plain(repo.name))} ${dim('·')} ` : ''}${new Date().toString().slice(0, 21)}` +
+      (stale.size ? `  ${dim(`cached ${ago(Math.min(...[...stale].map((k) => fetched[k])))}`)}` : '') +
       (flash && Date.now() < flash.until ? `  ${flash.text}` : ''),
     ...(ONCE ? [] : [keys, BAND]),
     ...section('fleet', renderFleet, 'asking Rex…'),
@@ -410,24 +462,53 @@ function draw() {
 }
 const repaint = () => { prev = []; process.stdout.write('\x1b[2J'); draw(); };
 
-async function refresh(key, fn) {
-  if (busy.has(key)) return;
-  busy.add(key);
-  try { state[key] = await fn(); delete state[key + 'Err']; } catch (e) { state[key + 'Err'] = firstLine(e); }
-  busy.delete(key);
-  draw();
+function refresh(key, fn) {
+  if (!busy.has(key)) busy.set(key, (async () => {
+    try { state[key] = await fn(); fetched[key] = Date.now(); delete state[key + 'Err']; } catch (e) { state[key + 'Err'] = firstLine(e); }
+    busy.delete(key);
+    stale.delete(key);
+    if (key !== 'fleet') save(); // the fleet changes every few seconds: the others' saves, and quitting, take it along
+    draw();
+  })());
+  return busy.get(key);
 }
 
 const SOURCES = { fleet: [fleet, 3e3], prs: [prs, 60e3], issues: [issues, 60e3], usage: [async () => usage(), 300e3] };
 const refreshAll = () => Object.entries(SOURCES).map(([k, [fn]]) => refresh(k, fn));
 
+const save = () => writeCache('state.json', {
+  gh: repo?.gh, fetched, state: Object.fromEntries(Object.keys(SOURCES).filter((k) => state[k]).map((k) => [k, state[k]])),
+});
+function restore(saved) {
+  for (const k of Object.keys(SOURCES)) {
+    if (!saved?.state?.[k] || !saved.fetched?.[k]) continue;
+    state[k] = saved.state[k]; fetched[k] = saved.fetched[k]; stale.add(k);
+  }
+}
+
 async function main() {
-  repo = await detectRepo(process.cwd());
+  const dir = process.cwd();
+  repo = await detectRepo(dir);
+  cacheDir = path.join(CACHE, cacheKey(repo));
+  const saved = readCache('state.json');
+  if (repo) {
+    // A cached GitHub name is used at once and checked behind it. If it changed, PRs and issues are
+    // fetched again, after any fetch for the old name finishes.
+    const check = githubName(dir);
+    named(saved && 'gh' in saved ? saved.gh : await check);
+    check.then((gh) => {
+      if (gh === repo.gh) return;
+      named(gh);
+      for (const k of ['prs', 'issues']) Promise.resolve(busy.get(k)).then(() => refresh(k, SOURCES[k][0]));
+    });
+  }
+  restore(saved);
   if (ONCE) {
     await Promise.all(refreshAll());
+    save();
     return console.log(frame().map((l) => paint(l, 0, Infinity, 0)).join('\n'));
   }
-  const quit = () => { process.stdout.write('\x1b[0m\x1b[?25h\x1b[?1049l'); process.exit(0); };
+  const quit = () => { save(); process.stdout.write('\x1b[0m\x1b[?25h\x1b[?1049l'); process.exit(0); };
   process.stdout.write('\x1b[?1049h\x1b[?25l');
   process.on('SIGINT', () => handedOver || quit()).on('SIGTERM', quit).on('SIGHUP', quit); // Ctrl-C in wt's setup is wt's
   process.stdout.on('resize', () => handedOver || repaint());
@@ -466,7 +547,37 @@ if (process.argv.includes('--test')) {
   assert.deepStrictEqual(aggregate([rows], now, (cwd) => cwd === '/r/a').models, [['claude-x', 1, 1]]); // keep picks sessions by folder
   repo = { roots: ['/r/wt'] };
   assert.deepStrictEqual(['/r/wt', '/r/wt/main', '/r/wt-other', undefined].map(inRepo), [true, true, false, false]);
+  // Cached rows: in the repo, in the window, each message once.
+  const row = (id, day, cwd) => [id, 'claude-x', day, 1, 1, cwd];
+  assert.deepStrictEqual(cacheRows([row('a', '2026-11-01', '/r/wt'), row('a', '2026-11-01', '/r/wt'), row('b', '2026-10-02', '/r/wt'), row('c', '2026-11-01', '/r/x')], '2026-10-03'),
+    [row('a', '2026-11-01', '/r/wt')]);
   repo = null;
+  // Every worktree of a repo shares a cache folder; other repos, and everything, have their own.
+  const key = cacheKey({ roots: ['/r/wt', '/r/wt/main'] });
+  assert.strictEqual(key, cacheKey({ roots: ['/r/wt', '/r/wt/other'] }));
+  assert.ok(/^wt-[0-9a-f]{8}$/.test(key) && key !== cacheKey({ roots: ['/s/wt'] }) && cacheKey(null) === 'all');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rex-dash-'));
+  cacheDir = path.join(tmp, 'cache');
+  writeCache('a.json', { a: 1 });
+  assert.deepStrictEqual(readCache('a.json'), { version: CACHE_VERSION, a: 1 });
+  fs.writeFileSync(path.join(cacheDir, 'old.json'), JSON.stringify({ version: 0, a: 1 }));
+  assert.deepStrictEqual([readCache('old.json'), readCache('none.json')], [null, null]); // another version, or none
+  // A new dashboard reuses the saved rows of a transcript whose mtime holds, unless the repo grew a root they don't cover.
+  const projects = path.join(tmp, 'projects'), log = path.join(projects, 'p', 's.jsonl'), at = Math.floor(Date.now() / 1000);
+  const today = (id, cwd) => JSON.stringify({ timestamp: new Date().toISOString(), cwd, message: { id, model: 'claude-x', usage: { output_tokens: 1 } } });
+  fs.mkdirSync(path.dirname(log), { recursive: true });
+  fs.writeFileSync(log, [today('p', '/r/a'), today('q', '/r/b')].join('\n'));
+  fs.utimesSync(log, at, at);
+  repo = { roots: ['/r/a'] };
+  assert.deepStrictEqual(usage(projects).models, [['claude-x', 1, 1]]);
+  fs.writeFileSync(log, '');
+  fs.utimesSync(log, at, at);
+  transcripts = null;
+  assert.deepStrictEqual(usage(projects).models, [['claude-x', 1, 1]]); // read from the cache, not the emptied file
+  repo = { roots: ['/r/a', '/r/b'] }; transcripts = null;
+  assert.deepStrictEqual(usage(projects).models, []); // /r/b wasn't covered, so the file is read again
+  fs.rmSync(tmp, { recursive: true });
+  repo = cacheDir = transcripts = null;
   assert.strictEqual(vis(clip(red('hello') + ' world', 3)), 'hel');
   assert.strictEqual(vis(pad(green('ok'), 4)), 'ok  ');
   for (const [name, shader] of Object.entries(SHADERS)) {

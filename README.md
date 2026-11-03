@@ -27,6 +27,17 @@ Started inside a git repo, the dashboard shows only that repo, and its name appe
 
 Started anywhere else, such as your home folder, it shows everything.
 
+## Cache
+
+The dashboard caches what it shows, so a new dashboard opens straight on the last data and refreshes it in the background. Until every section has refreshed, the header shows how old the oldest cached section is, such as `cached 4m`.
+
+Each repo has its own cache, shared by all its worktrees. Everything, outside a repo, has its own as well. Caches live in `$XDG_CACHE_HOME/rex-dash`, or `~/.cache/rex-dash`, one folder per repo:
+
+- `state.json`: the last fleet, PRs, issues and usage, and the repo's GitHub name. The cached name is used straight away and checked against `gh` in the background. If it changed, PRs and issues are fetched again.
+- `transcripts.json`: the token usage read from each Claude Code transcript, limited to the repo and the last 30 days. Only transcripts that changed since are read again. Adding a worktree outside the repo's folders means reading them all once more.
+
+`--once` always fetches fresh data, but it still uses the transcripts and the GitHub name. You can delete the folder at any time; the next start just takes longer.
+
 ## Effects
 
 Everything is drawn with truecolor text, at 10 frames a second, rewriting only rows that changed.
