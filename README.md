@@ -14,7 +14,7 @@ It shows:
 - **My PRs:** up to 10 of your open PRs, with CI, review and draft state.
 - **Issues:** open issues assigned to you, most recently updated first. Each shows its labels in their GitHub colours, then its author, assignees, comment count, milestone and linked PRs. A `⇄` marks an issue with a linked PR, one that would close it, coloured by the most active one: green open, yellow draft, magenta merged, dim closed.
 
-Keys: `j`/`k` or the arrow keys select an agent, a PR or an issue, scrolling the dashboard to keep the selection in view; `/` filters the lists; `s` cycles the shader, `e` cycles the effects, `r` refreshes, `q` quits. Enter on an agent shows its pane in the Rex app. Enter on a PR or an issue opens a worktree for it. `o` on a PR or an issue opens its GitHub page in your browser, with `open` on macOS or `xdg-open` elsewhere. That's on the machine rex-dash runs on, so on a remote Rex server it opens there.
+Keys: `j`/`k` or the arrow keys select an agent, a PR or an issue, scrolling the dashboard to keep the selection in view; `/` filters the lists; `s` cycles the shader, `e` cycles the effects, `r` refreshes, `q` quits. Enter on an agent shows its pane in the Rex app. Enter on a PR or an issue opens a worktree for it. `o` on a PR or an issue opens its GitHub page in your browser, with `open` on macOS or `xdg-open` elsewhere. That's on the machine rex-dash runs on, so on a remote Rex server it opens there. Keys you add yourself run your own commands on a PR or an issue, such as starting an agent on it: see [Custom keys](#custom-keys).
 
 ## Filtering
 
@@ -48,6 +48,53 @@ Then wt creates the worktree, runs `wt.setupCommand`, and opens the worktree in 
 You can select only the PRs on screen, up to 10 in each list. To reach others, filter for them.
 
 This needs repo mode, since wt works on the repo it runs in.
+
+## Custom keys
+
+You can add keys of your own in `$XDG_CONFIG_HOME/rex-dash/config.json`, or `~/.config/rex-dash/config.json`. A key runs a command for the selected PR or issue, in its worktree, in a new tab. For example, `a` starts an agent on it, and `R` reviews a PR:
+
+```json
+{
+  "keymaps": {
+    "a": {
+      "label": "agent",
+      "command": {
+        "issue": "claude \"Implement issue #$REX_DASH_NUMBER, $REX_DASH_TITLE. Read it with gh issue view $REX_DASH_NUMBER.\"",
+        "pr": "claude \"Address the review comments on PR #$REX_DASH_NUMBER. Read them with gh pr view $REX_DASH_NUMBER --comments.\""
+      }
+    },
+    "R": { "label": "review", "on": ["pr"], "command": "claude -p \"/review $REX_DASH_NUMBER\"" }
+  }
+}
+```
+
+The key first opens the worktree with wt, as Enter does, so wt has the dashboard's pane while it asks for a branch and runs `wt.setupCommand`. Then, instead of switching to the worktree, rex-dash runs the command in a new tab in the worktree's session, the one Enter opens, and creates that session if there's none. The tab opens in the background: you stay on the dashboard. An agent that reports its status to Rex, such as Claude Code, shows up in the fleet, where Enter takes you to it. `claude "…"` stays open so you can follow up; `claude -p "…"` prints its answer and exits.
+
+Each key has:
+
+| Field | |
+| --- | --- |
+| `command` | Required. A command for `/bin/sh -c`, or one for each kind: `{"issue": "…", "pr": "…"}` |
+| `label` | Its name in the key bar and in its tabs' names, such as `agent #42`. The command's first word by default |
+| `on` | `["issue"]`, `["pr"]` or both. The kinds `command` has by default |
+| `background` | `false` switches to the tab, as Enter does. `true` by default |
+| `keep_open` | `false` closes the tab when the command exits. `true` by default, so you can read what it printed |
+| `session` | `"current"` opens the tab in the dashboard's session rather than the worktree's. `"worktree"` by default |
+
+The command gets the PR or issue, and its worktree, in variables:
+
+| Variable | |
+| --- | --- |
+| `REX_DASH_KIND` | `issue` or `pr` |
+| `REX_DASH_NUMBER` | Its number |
+| `REX_DASH_TITLE` | Its title |
+| `REX_DASH_URL` | Its GitHub page |
+| `REX_DASH_REPO` | The GitHub repository, such as `owner/repo` |
+| `WT_WORKTREE`, `WT_BRANCH` | The worktree's folder and branch |
+
+Use them, in double quotes, rather than putting their text in the command. Anyone can write an issue's title, and in `"$REX_DASH_TITLE"` it stays text, never a command. The command runs where Rex runs commands, in your login shell's environment, so your `PATH` applies but your aliases don't.
+
+A key is a single character, and case matters: `a` and `A` are different keys. The dashboard's own keys can't be mapped: `j`, `k`, `o`, `q`, `r`, `s`, `e` and `/`. A key that's wrong is left out, and the header says why. `r` reads the file again, so you can try a change without restarting. Like Enter, your keys need repo mode.
 
 ## Repo mode
 
@@ -128,7 +175,7 @@ The fleet refreshes every 3 seconds, PRs and issues every minute and usage every
 
 ## Development
 
-The source executable is a small entry point. `lib/app.js` owns dashboard state and refreshes; `lib/integrations/` calls Rex, GitHub and wt; `lib/storage.js` and `lib/usage.js` manage persisted data; and `lib/ui/` handles the terminal view and input. There is no runtime npm dependency. The release build uses Node 24, esbuild and postject **at build time** to bundle those modules into a single executable containing Node.
+The source executable is a small entry point. `lib/app.js` owns dashboard state and refreshes; `lib/config.js` reads your keys; `lib/integrations/` calls Rex, GitHub and wt; `lib/storage.js` and `lib/usage.js` manage persisted data; and `lib/ui/` handles the terminal view and input. There is no runtime npm dependency. The release build uses Node 24, esbuild and postject **at build time** to bundle those modules into a single executable containing Node.
 
 ```sh
 ./rex-dash --test                      # source self-check
