@@ -27,6 +27,21 @@ test('Rex adapter uses the existing JSON CLI commands, ranks status, and filters
   assert.ok(calls.some(([cmd, args]) => cmd === 'rex' && args.join(' ') === 'block call -s s1 -b b1 program_status'));
 });
 
+test('Rex adapter leaves the dashboard\'s own pane out of the fleet', async () => {
+  const calls = [];
+  const runJson = async (cmd, args) => {
+    calls.push(args.join(' '));
+    if (args[0] === 'ls') return { sessions: [{ session_id: 's1', label: 'web' }] };
+    if (args[0] === 'block' && args[1] === 'ls') return { blocks: [{ block_id: 'b1', window_id: 'w1' }, { block_id: 'b2', window_id: 'w1' }] };
+    if (args.at(-1) === 'process') return { foreground: { name: 'node', cwd: '/repo' } };
+    if (args.at(-1) === 'program_status') return { records: [{ state: 'idle', app: 'rex' }] };
+    return { title: 'Rex Dash' };
+  };
+  const result = await fleet({ roots: ['/repo'] }, runJson, 'b2');
+  assert.deepEqual(result[0].panes.map((p) => p.blockId), ['b1']);
+  assert.ok(!calls.some((c) => c.includes('-b b2')));
+});
+
 test('Rex focus selects the session/window before the block, inheriting REX_CLIENT', async () => {
   const calls = [], original = process.env.REX_CLIENT;
   process.env.REX_CLIENT = 'client-2';

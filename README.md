@@ -8,7 +8,7 @@ A dashboard pane for [Rex](https://www.superlogical.com/rex/docs).
 
 It shows:
 
-- **Fleet:** every Rex session and pane, with the status its program reports to Rex (working, blocked, done or idle), the task title, current activity and folder. Claude Code and omp report status; plain shells show dimmed.
+- **Fleet:** every Rex session and pane but the dashboard's own, with the status its program reports to Rex (working, blocked, done or idle), the task title, current activity and folder. Claude Code and omp report status; plain shells show dimmed.
 - **Usage:** Claude Code tokens by model over the last 30 days, with a daily sparkline, read from `~/.claude/projects`.
 - **Review requests:** up to 10 open PRs waiting on your review, across GitHub, with CI and review state.
 - **My PRs:** up to 10 of your open PRs, with CI, review and draft state.
@@ -162,6 +162,8 @@ rex split -b "$REX_BLOCK" --split=right --ratio 45 --label Cockpit --focus=false
 ```
 
 With several Rex apps connected, set `REX_CLIENT` to the one Enter should switch.
+
+In Rex's sidebar, the dashboard's pane shows as Rex Dash, with Rex's icon. Rex names a pane after its foreground program, so in a popup that runs it through `sh -c`, add `set -m;` before the command, for example `sh -c 'set -m; "$@"' sh rex-dash`. Otherwise the pane shows as the shell.
 
 ## Usage
 
