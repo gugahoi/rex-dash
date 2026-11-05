@@ -2,9 +2,11 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { fleet, focusPane } = require('../lib/integrations/rex');
+const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
+const { fleet, focusPane, withEnv, openTab } = require('../lib/integrations/rex');
 const { prs, issues } = require('../lib/integrations/github');
-const { runWorktree } = require('../lib/integrations/wt');
+const { runWorktree, prepareWorktree } = require('../lib/integrations/wt');
 
 test('Rex adapter uses the existing JSON CLI commands, ranks status, and filters by worktree', async () => {
   const calls = [];
@@ -87,4 +89,92 @@ test('wt takes and restores the terminal on success, failure, and missing execut
     else assert.equal(result.code, outcome);
     if (outcome === 7) assert.ok(writes.some((text) => text.includes('press a key')));
   }
+});
+
+// A terminal for wt, and a wt that ends as outcome says, after doing what act does with its options.
+function fakeTerminal() {
+  const stdin = new EventEmitter();
+  stdin.setRawMode = () => stdin;
+  stdin.pause = stdin.resume = () => stdin;
+  return { stdin, stdout: { write() {} } };
+}
+const fakeWt = (stdin, outcome, act = () => {}) => (cmd, args, options) => {
+  const child = new EventEmitter();
+  process.nextTick(() => {
+    act(options);
+    child.emit('exit', outcome, null);
+    if (outcome) setImmediate(() => stdin.emit('data', Buffer.from(' ')));
+  });
+  return child;
+};
+
+test('wt hands the worktree back through WT_OPEN_COMMAND, with no path or branch in a command', async () => {
+  const { stdin, stdout } = fakeTerminal(), seen = [];
+  const worktree = "/tmp/it's $(echo pwn) `id`; x", branch = '42-fix "it"';
+  const opened = (options) => {
+    seen.push(options);
+    // what wt does with WT_MULTIPLEXER=command, once the worktree is ready
+    execFileSync('sh', ['-c', options.env.WT_OPEN_COMMAND], { env: { ...options.env, WT_WORKTREE: worktree, WT_BRANCH: branch, WT_SESSION: 'r-42-fix-0123abcd', WT_COMMAND: 'claude' } });
+  };
+  const ready = await prepareWorktree('issue', 42, { stdin, stdout, spawnCommand: fakeWt(stdin, 0, opened) });
+  assert.deepEqual(ready, { end: { code: 0, signal: null }, worktree: { path: worktree, branch, session: 'r-42-fix-0123abcd' } });
+  const { env, stdio } = seen[0];
+  assert.equal(stdio, 'inherit');
+  assert.equal(env.WT_MULTIPLEXER, 'command');
+  assert.equal(env.PATH, process.env.PATH);
+  assert.ok(!fs.existsSync(env.REX_DASH_HANDOFF)); // cleaned up
+
+  // a cancelled branch prompt: wt exits 0 without opening anything
+  assert.deepEqual(await prepareWorktree('issue', 42, { stdin, stdout, spawnCommand: fakeWt(stdin, 0) }), { end: { code: 0, signal: null }, worktree: null });
+  // a failed setup: wt says why, and the dashboard waits for a key
+  assert.equal((await prepareWorktree('pr', 7, { stdin, stdout, spawnCommand: fakeWt(stdin, 3, opened) })).worktree, null);
+});
+
+test('withEnv passes values to the command as data, however they are quoted', () => {
+  const vars = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`V${i + 1}`, `v${i + 1}`]));
+  Object.assign(vars, { V1: '$(echo pwn)', V2: "it's \"quoted\"", V3: 'a;b && c', V4: '`id`', V5: '', V6: 'line\nbreak' });
+  const argv = withEnv(vars, 'printf "%s|" "$V1" "$V2" "$V3" "$V4" "$V5" "$V6" "$V9" "$V10"');
+  assert.equal(argv[0], '/bin/sh');
+  assert.ok(!argv[2].includes('pwn')); // the script is fixed
+  assert.equal(execFileSync(argv[0], argv.slice(1), { encoding: 'utf8' }),
+    "$(echo pwn)|it's \"quoted\"|a;b && c|`id`||line\nbreak|v9|v10|");
+  assert.throws(() => withEnv({ 'A;B': 'x' }, 'true'), /bad variable name/);
+});
+
+test('openTab adds a background window to the worktree session, or creates the session, without showing it', async () => {
+  const argv = ['/bin/sh', '-c', 'claude'];
+  const call = (sessions, created = {}) => {
+    const calls = [];
+    const io = {
+      runJson: async (cmd, args) => { calls.push(args); return args[0] === 'ls' ? { sessions } : created; },
+      run: async (cmd, args) => { calls.push(args); },
+    };
+    return { calls, io };
+  };
+
+  let t = call([{ session_id: 's1', label: 'r-7-fix-abc' }, { session_id: 's2', label: 'other' }], { window_id: 'w9' });
+  assert.deepEqual(await openTab({ sessionLabel: 'r-7-fix-abc', name: 'agent #7', cwd: '/r/7-fix', argv }, t.io), { sessionId: 's1', windowId: 'w9' });
+  assert.deepEqual(t.calls, [
+    ['ls', '--json'],
+    ['window', 'new', '-s', 's1', 'agent #7', '-c', '/r/7-fix', '--keep-open', '--focus=false', '--json', '--', ...argv],
+  ]);
+
+  t = call([], { session_id: 'new', initial_windows: [{ window_id: 'w1' }] });
+  assert.deepEqual(await openTab({ sessionLabel: 'r-7-fix-abc', name: 'agent #7', cwd: '/r/7-fix', argv, keepOpen: false }, t.io), { sessionId: 'new', windowId: 'w1' });
+  assert.deepEqual(t.calls, [['ls', '--json'], ['new', 'r-7-fix-abc', '-c', '/r/7-fix', '--window', 'agent #7', '--json', '--', ...argv]]);
+
+  t = call([], {}); // rex new may have started it: never make another
+  await assert.rejects(() => openTab({ sessionLabel: 'r-7', name: 'n', cwd: '/', argv }, t.io), /can't read rex new's response/);
+  assert.equal(t.calls.length, 2);
+
+  t = call([{ session_id: 's1', label: 'r-7' }, { session_id: 's3', label: 'r-7' }]);
+  await assert.rejects(() => openTab({ sessionLabel: 'r-7', name: 'n', cwd: '/', argv }, t.io), /several sessions are labelled r-7: s1, s3/);
+
+  // this session, shown
+  t = call([], { window_id: 'w2' });
+  await openTab({ sessionId: 'here', name: 'agent #7', cwd: '/r/7-fix', argv, background: false }, t.io);
+  assert.deepEqual(t.calls, [
+    ['window', 'new', '-s', 'here', 'agent #7', '-c', '/r/7-fix', '--keep-open', '--focus=false', '--json', '--', ...argv],
+    ['do', 'session.select', 'session_id=here', 'window_id=w2'],
+  ]);
 });
