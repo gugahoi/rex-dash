@@ -48,7 +48,8 @@ if [[ "$PLATFORM" == darwin-* ]]; then
   codesign --force --sign - "$TMP/rex-dash"
   codesign --verify "$TMP/rex-dash"
 fi
-"$TMP/rex-dash" --test | grep -qx ok
+selftest="$("$TMP/rex-dash" --test)"
+grep -qx ok <<< "$selftest"
 
 mkdir "$TMP/stage"
 cp "$TMP/rex-dash" "$TMP/stage/rex-dash"

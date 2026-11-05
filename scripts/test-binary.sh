@@ -22,7 +22,8 @@ chmod +x "$TMP/bin/rex" "$TMP/bin/gh"
 
 (
   cd "$TMP"
-  env -i HOME="$TMP/home" PATH="$TMP/bin" XDG_CACHE_HOME="$TMP/cache" "$TMP/bin/rex-dash" --test | grep -qx ok
+  selftest="$(env -i HOME="$TMP/home" PATH="$TMP/bin" XDG_CACHE_HOME="$TMP/cache" "$TMP/bin/rex-dash" --test)"
+  grep -qx ok <<< "$selftest"
   env -i HOME="$TMP/home" PATH="$TMP/bin" XDG_CACHE_HOME="$TMP/cache" "$TMP/bin/rex-dash" --once > "$TMP/once.txt"
 )
 for heading in FLEET USAGE 'REVIEW REQUESTS' 'MY PRS' ISSUES; do

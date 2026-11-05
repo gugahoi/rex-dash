@@ -52,7 +52,10 @@ if [[ ${1:-} == --brew ]]; then
   cp "$TMP/rex-dash.rb" "$TAP_DIR/Formula/rex-dash.rb"
   HOMEBREW_NO_AUTO_UPDATE=1 brew trust --formula "$TAP/rex-dash"
   TRUSTED=true
-  if brew deps --formula "$TAP/rex-dash" | grep -qx node; then
+  # Declared (not --installed) deps: the formula isn't installed yet. Capture
+  # before grep so a brew failure or SIGPIPE can't make this check pass silently.
+  deps="$(HOMEBREW_NO_ENV_HINTS=1 brew deps --formula "$TAP/rex-dash")"
+  if grep -qx node <<< "$deps"; then
     echo 'the binary formula must not depend on Node' >&2
     exit 1
   fi
