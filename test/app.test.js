@@ -160,3 +160,66 @@ test('a keymap needs the repo, as wt does', async () => {
   assert.equal(called, false);
   assert.match(vis(app.frame()[0]), /start rex-dash in the repo to run \[a\] agent in a worktree/);
 });
+
+test('keys 1 to 5 hide and show sections for the session, starting from the config, and hidden ones are not selected', () => {
+  const writes = [];
+  const config = parseConfig({ hide: ['usage', 'issues'] });
+  const app = createApp({ stdout: { columns: 300, rows: 60, write: (s) => writes.push(s) }, config }), { state } = app;
+  state.fleet = [{ label: 'web', panes: [pane('b1', 'coding', 'web')] }];
+  state.usage = { daily: [1], models: [['claude-x', 5, 3]] };
+  state.prs = { review: { issueCount: 1, nodes: [pr(3)] }, mine: { issueCount: 1, nodes: [{ ...pr(4), replies: 1 }] } };
+  state.issues = { issueCount: 1, nodes: [issue(7, 'fix it')] };
+  const text = () => app.frame().map(vis).join('\n');
+  const headings = () => ['FLEET', 'USAGE', 'REVIEW REQUESTS', 'MY PRS', 'ISSUES'].filter((h) => text().includes(h));
+  const status = () => writes.map((s) => s.match(/\x1b\]7501;state=(\w+)/)).filter(Boolean).at(-1)?.[1];
+
+  assert.deepEqual(headings(), ['FLEET', 'REVIEW REQUESTS', 'MY PRS']);
+  assert.match(vis(app.frame()[0]), /hidden \[2\] usage \[5\] issues/);
+  assert.match(vis(app.frame()[1]), /\[\/\] filter {2}\[1-5\] hide {2}\[s\] shader/);
+  assert.deepEqual(app.selectable().map((x) => x.key), ['b1', 'r#3', 'r#4']);
+
+  app.press('5'); app.press('1'); app.press('3');
+  assert.deepEqual(headings(), ['MY PRS', 'ISSUES']);
+  assert.match(vis(app.frame()[0]), /hidden \[1\] fleet \[2\] usage \[3\] review requests/);
+  assert.deepEqual(app.selectable().map((x) => x.key), ['r#4', 'r#7']);
+
+  // with my PRs hidden, Rex doesn't hear of their replies; nor are they on screen to select
+  assert.equal(status(), 'blocked'); // any key that hides or shows tells Rex what shows
+  app.press('4');
+  assert.deepEqual(headings(), ['ISSUES']);
+  assert.deepEqual(app.selectable().map((x) => x.key), ['r#7']);
+  assert.equal(status(), 'idle');
+  app.press('4');
+  assert.equal(status(), 'blocked');
+  app.press('4');
+  assert.equal(status(), 'idle');
+
+  // a hidden section's error stays hidden too, and the filter only looks through what shows
+  state.prsErr = 'offline';
+  app.press('3');
+  assert.match(text(), /PRS {2}\n {2}offline/);
+  app.press('3');
+  assert.doesNotMatch(text(), /offline/);
+  delete state.prsErr;
+  app.setQuery('coding');
+  assert.deepEqual(app.selectable(), []);
+  app.setQuery('');
+
+  // while typing a filter, digits are text
+  app.press('/'); app.press('2'); app.press('\r');
+  assert.deepEqual(headings(), ['ISSUES']);
+  assert.match(vis(app.frame()[1]), /^\/2 /);
+  app.press('\x1b');
+
+  for (const key of '1234') app.press(key);
+  assert.deepEqual(headings(), ['FLEET', 'USAGE', 'REVIEW REQUESTS', 'MY PRS', 'ISSUES']);
+  assert.doesNotMatch(vis(app.frame()[0]), /hidden/);
+});
+
+test('once leaves out the sections the config hides, without the keys to show them', () => {
+  const app = createApp({ once: true, config: parseConfig({ hide: ['fleet', 'review_requests'] }) });
+  app.state.prs = { review: { issueCount: 1, nodes: [pr(3)] }, mine: { issueCount: 0, nodes: [] } };
+  const text = app.frame().map(vis).join('\n');
+  for (const section of ['USAGE', 'MY PRS', 'ISSUES']) assert.ok(text.includes(section), section);
+  for (const section of ['FLEET', 'REVIEW REQUESTS', 'hidden']) assert.ok(!text.includes(section), section);
+});

@@ -28,7 +28,8 @@ case "$*" in
   'block call -s s -b b title') echo '{"title":"coding"}' ;;
 esac
 `);
-  executable('gh', `case "$1" in
+  executable('gh', `echo "gh $*" >> "$CALL_LOG"
+case "$1" in
   api)
     case "$*" in
       *is:pr*) echo '{"data":{"mine":{"issueCount":0,"nodes":[]},"review":{"issueCount":0,"nodes":[]}}}' ;;
@@ -40,7 +41,7 @@ esac
   const link = path.join(bin, 'rex-dash');
   fs.symlinkSync(CLI, link);
   const log = path.join(dir, 'calls');
-  const env = { ...process.env, HOME: dir, XDG_CACHE_HOME: path.join(dir, 'cache'), XDG_STATE_HOME: path.join(dir, 'state'), CALL_LOG: log, PATH: `${bin}${path.delimiter}${process.env.PATH}` };
+  const env = { ...process.env, HOME: dir, XDG_CACHE_HOME: path.join(dir, 'cache'), XDG_CONFIG_HOME: path.join(dir, 'config'), XDG_STATE_HOME: path.join(dir, 'state'), CALL_LOG: log, PATH: `${bin}${path.delimiter}${process.env.PATH}` };
   assert.equal(execFileSync(link, ['--test'], { cwd: dir, env, encoding: 'utf8' }).trim(), 'ok');
   const output = execFileSync(link, ['--once'], { cwd: dir, env, encoding: 'utf8' });
   for (const word of ['FLEET', 'web', 'coding', 'USAGE', '4', 'REVIEW REQUESTS', 'MY PRS', 'ISSUES']) assert.ok(output.includes(word), word);
@@ -51,6 +52,19 @@ esac
   assert.equal(JSON.parse(fs.readFileSync(path.join(cache, 'state.json'))).version, 1);
   assert.equal(JSON.parse(fs.readFileSync(path.join(cache, 'transcripts.json'))).version, 1);
   assert.ok(!fs.existsSync(path.join(dir, 'state', 'rex-dash', 'settings.json')));
+
+  // Sections the config hides are neither shown nor fetched: no usage scan, and no PR query.
+  fs.mkdirSync(path.join(dir, 'config', 'rex-dash'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'config', 'rex-dash', 'config.json'), JSON.stringify({ hide: ['usage', 'review_requests', 'my_prs'] }));
+  fs.rmSync(cache, { recursive: true });
+  fs.writeFileSync(log, '');
+  const hidden = execFileSync(link, ['--once'], { cwd: dir, env, encoding: 'utf8' });
+  for (const word of ['FLEET', 'coding', 'ISSUES']) assert.ok(hidden.includes(word), word);
+  for (const word of ['USAGE', 'REVIEW REQUESTS', 'MY PRS']) assert.ok(!hidden.includes(word), word);
+  const hiddenCalls = fs.readFileSync(log, 'utf8');
+  assert.ok(hiddenCalls.includes('gh api graphql'));
+  assert.ok(!hiddenCalls.includes('is:pr'));
+  assert.ok(!fs.existsSync(path.join(cache, 'transcripts.json')));
 });
 
 test('repo-mode --once scopes GitHub and cache to the detected worktree', (t) => {
@@ -76,7 +90,7 @@ test('repo-mode --once scopes GitHub and cache to the detected worktree', (t) =>
 esac
 `);
   const log = path.join(dir, 'queries');
-  const env = { ...process.env, HOME: home, XDG_CACHE_HOME: path.join(dir, 'cache'), QUERY_LOG: log, PATH: `${bin}${path.delimiter}${process.env.PATH}` };
+  const env = { ...process.env, HOME: home, XDG_CACHE_HOME: path.join(dir, 'cache'), XDG_CONFIG_HOME: path.join(dir, 'config'), QUERY_LOG: log, PATH: `${bin}${path.delimiter}${process.env.PATH}` };
   const output = process.env.REX_DASH_BIN
     ? execFileSync(CLI, ['--once'], { cwd: repo, env, encoding: 'utf8' })
     : execFileSync(process.execPath, [CLI, '--once'], { cwd: repo, env, encoding: 'utf8' });

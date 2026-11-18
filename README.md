@@ -14,7 +14,7 @@ It shows:
 - **My PRs:** up to 10 of your open PRs, with CI, review and draft state. A yellow `↩2` means two replies are waiting on you. Those PRs come first, and the heading counts them. See [Replies](#replies).
 - **Issues:** open issues assigned to you, most recently updated first. Each shows its labels in their GitHub colours, then its author, assignees, comment count, milestone and linked PRs. A `⇄` marks an issue with a linked PR, one that would close it, coloured by the most active one: green open, yellow draft, magenta merged, dim closed.
 
-Keys: `j`/`k` or the arrow keys select an agent, a PR or an issue, scrolling the dashboard to keep the selection in view; `/` filters the lists; `s` cycles the shader, `e` cycles the effects, `r` refreshes, `q` quits. Enter on an agent shows its pane in the Rex app. Enter on a PR or an issue opens a worktree for it. `o` on a PR or an issue opens its GitHub page in your browser, with `open` on macOS or `xdg-open` elsewhere. That's on the machine rex-dash runs on, so on a remote Rex server it opens there. Keys you add yourself run your own commands on a PR or an issue, such as starting an agent on it: see [Custom keys](#custom-keys).
+Keys: `j`/`k` or the arrow keys select an agent, a PR or an issue, scrolling the dashboard to keep the selection in view; `/` filters the lists; `1` to `5` hide and show the sections (see [Hiding sections](#hiding-sections)); `s` cycles the shader, `e` cycles the effects, `r` refreshes, `q` quits. Enter on an agent shows its pane in the Rex app. Enter on a PR or an issue opens a worktree for it. `o` on a PR or an issue opens its GitHub page in your browser, with `open` on macOS or `xdg-open` elsewhere. That's on the machine rex-dash runs on, so on a remote Rex server it opens there. Keys you add yourself run your own commands on a PR or an issue, such as starting an agent on it: see [Custom keys](#custom-keys).
 
 ## Filtering
 
@@ -38,6 +38,30 @@ After Enter, `/` edits the filter and Esc clears it. PRs and issues are filtered
 
 `/reply` keeps your PRs that have replies waiting on you. Since the filter is fuzzy, it also keeps any PR whose text has those letters in order.
 
+## Hiding sections
+
+Each section has a number key, in screen order, that hides it and shows it again:
+
+| Key | Section | In `hide` |
+| --- | --- | --- |
+| `1` | Fleet | `fleet` |
+| `2` | Usage | `usage` |
+| `3` | Review requests | `review_requests` |
+| `4` | My PRs | `my_prs` |
+| `5` | Issues | `issues` |
+
+The keys last until you quit. While sections are hidden, the header lists them with their keys, such as `hidden [2] usage [5] issues`. To hide sections every time, list them in `hide` in `$XDG_CONFIG_HOME/rex-dash/config.json`, or `~/.config/rex-dash/config.json`:
+
+```json
+{
+  "hide": ["usage", "issues"]
+}
+```
+
+The keys still show them for the session. `--once` leaves them out too. `r` reads the file again. Then a section whose entry in `hide` changed takes the file's word, and the others stay as your keys left them.
+
+A hidden section isn't fetched, so it costs nothing. Hiding usage skips the scan of Claude Code's transcripts, and hiding both review requests and my PRs skips the PR query. A section you show again is fetched at once. Until then it shows its cached data, and the header shows how old that is. j/k select only what shows, and the filter only looks through it.
+
 ## Replies
 
 A reply waits on you in one of your PRs when either:
@@ -47,9 +71,9 @@ A reply waits on you in one of your PRs when either:
 
 Each counts once in the `↩` number. Replying in the thread, or resolving it, clears a thread. Commenting or pushing clears the rest. Bots, such as Copilot and Claude, don't count. Approvals don't count either. A review with inline comments counts through its threads.
 
-The dashboard reads the last 20 threads, 10 reviews and 10 comments of each PR. That makes its PR query cost about 8 points of GitHub's 5,000 an hour, rather than 1. It runs every minute in every open dashboard.
+The dashboard reads the last 20 threads, 10 reviews and 10 comments of each PR. That makes its PR query cost about 8 points of GitHub's 5,000 an hour, rather than 1. It runs every minute in every open dashboard, unless both review requests and my PRs are [hidden](#hiding-sections).
 
-While replies wait on you, Rex shows the dashboard's pane as blocked, waiting on you, with a message such as "2 PRs need your reply". Then you can see it in Rex's sidebar when the dashboard is out of sight.
+While replies wait on you, Rex shows the dashboard's pane as blocked, waiting on you, with a message such as "2 PRs need your reply". Then you can see it in Rex's sidebar when the dashboard is out of sight. While my PRs is [hidden](#hiding-sections), it doesn't.
 
 ## Opening a worktree for a PR or an issue
 
@@ -109,7 +133,7 @@ The command gets the PR or issue, and its worktree, in variables:
 
 Use them, in double quotes, rather than putting their text in the command. Anyone can write an issue's title, and in `"$REX_DASH_TITLE"` it stays text, never a command. The command runs where Rex runs commands, in your login shell's environment, so your `PATH` applies but your aliases don't.
 
-A key is a single character, and case matters: `a` and `A` are different keys. The dashboard's own keys can't be mapped: `j`, `k`, `o`, `q`, `r`, `s`, `e` and `/`. A key that's wrong is left out, and the header says why. `r` reads the file again, so you can try a change without restarting. Like Enter, your keys need repo mode.
+A key is a single character, and case matters: `a` and `A` are different keys. The dashboard's own keys can't be mapped: `j`, `k`, `o`, `q`, `r`, `s`, `e`, `/` and `1` to `5`. A key that's wrong is left out, and the header says why. `r` reads the file again, so you can try a change without restarting. Like Enter, your keys need repo mode.
 
 ## Repo mode
 
@@ -124,7 +148,7 @@ Started anywhere else, such as your home folder, it shows everything.
 
 ## Cache
 
-The dashboard caches what it shows, so a new dashboard opens straight on the last data and refreshes it in the background. Until every section has refreshed, the header shows how old the oldest cached section is, such as `cached 4m`.
+The dashboard caches what it shows, so a new dashboard opens straight on the last data and refreshes it in the background. Until every section on screen has refreshed, the header shows how old the oldest cached section is, such as `cached 4m`.
 
 Each repo has its own cache, shared by all its worktrees. Everything, outside a repo, has its own as well. Caches live in `$XDG_CACHE_HOME/rex-dash`, or `~/.cache/rex-dash`, one folder per repo:
 
@@ -188,11 +212,11 @@ rex-dash --once   print one frame and exit
 rex-dash --test   run the self-check
 ```
 
-The fleet refreshes every 3 seconds, PRs and issues every minute and usage every 5 minutes.
+The fleet refreshes every 3 seconds, PRs and issues every minute and usage every 5 minutes, while they show.
 
 ## Development
 
-The source executable is a small entry point. `lib/app.js` owns dashboard state and refreshes; `lib/config.js` reads your keys; `lib/integrations/` calls Rex, GitHub and wt; `lib/storage.js` and `lib/usage.js` manage persisted data; and `lib/ui/` handles the terminal view and input. There is no runtime npm dependency. The release build uses Node 24, esbuild and postject **at build time** to bundle those modules into a single executable containing Node.
+The source executable is a small entry point. `lib/app.js` owns dashboard state and refreshes; `lib/config.js` reads your keys and hidden sections; `lib/integrations/` calls Rex, GitHub and wt; `lib/storage.js` and `lib/usage.js` manage persisted data; and `lib/ui/` handles the terminal view and input. There is no runtime npm dependency. The release build uses Node 24, esbuild and postject **at build time** to bundle those modules into a single executable containing Node.
 
 ```sh
 ./rex-dash --test                      # source self-check
