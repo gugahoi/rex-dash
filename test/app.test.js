@@ -136,6 +136,20 @@ test('a keymap runs its command for the selected issue or PR in a background tab
   assert.match(vis(broken.frame()[0]), /  rex: no server  config:/);
 });
 
+test('your PRs with replies waiting are selected first, and Rex hears how many when the pane comes back from wt', async () => {
+  const writes = [];
+  const integrations = { runWorktree: async (kind, number, { onHandoff }) => { onHandoff(true); onHandoff(false); return { code: 0 }; } };
+  const repo = { roots: ['/r'], gh: 'o/r', name: 'o/r' };
+  const app = createApp({ stdout: { columns: 300, rows: 40, write: (s) => writes.push(s) }, repo, integrations }), { state } = app;
+  state.prs = { review: { issueCount: 0, nodes: [] }, mine: { issueCount: 3, nodes: [pr(1), { ...pr(2), replies: 2 }, { ...pr(3), replies: 1 }] } };
+  assert.deepEqual(app.selectable().map((x) => x.key), ['r#2', 'r#3', 'r#1']);
+  app.press('j');
+  await app.press('\r');
+  const status = writes.map((s) => s.match(/\x1b\]7501;state=(\w+)[^\x07]*?(?::msg=([^\x07]+))?\x07/)).filter(Boolean).at(-1);
+  assert.equal(status[1], 'blocked');
+  assert.equal(Buffer.from(status[2], 'base64').toString(), '2 PRs need your reply');
+});
+
 test('a keymap needs the repo, as wt does', async () => {
   const config = parseConfig({ keymaps: { a: { label: 'agent', command: 'claude' } } });
   let called = false;

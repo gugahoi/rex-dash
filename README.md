@@ -11,7 +11,7 @@ It shows:
 - **Fleet:** every Rex session and pane but the dashboard's own, with the status its program reports to Rex (working, blocked, done or idle), the task title, current activity and folder. Claude Code and omp report status; plain shells show dimmed.
 - **Usage:** Claude Code tokens by model over the last 30 days, with a daily sparkline, read from `~/.claude/projects`.
 - **Review requests:** up to 10 open PRs waiting on your review, across GitHub, with CI and review state.
-- **My PRs:** up to 10 of your open PRs, with CI, review and draft state.
+- **My PRs:** up to 10 of your open PRs, with CI, review and draft state. A yellow `↩2` means two replies are waiting on you. Those PRs come first, and the heading counts them. See [Replies](#replies).
 - **Issues:** open issues assigned to you, most recently updated first. Each shows its labels in their GitHub colours, then its author, assignees, comment count, milestone and linked PRs. A `⇄` marks an issue with a linked PR, one that would close it, coloured by the most active one: green open, yellow draft, magenta merged, dim closed.
 
 Keys: `j`/`k` or the arrow keys select an agent, a PR or an issue, scrolling the dashboard to keep the selection in view; `/` filters the lists; `s` cycles the shader, `e` cycles the effects, `r` refreshes, `q` quits. Enter on an agent shows its pane in the Rex app. Enter on a PR or an issue opens a worktree for it. `o` on a PR or an issue opens its GitHub page in your browser, with `open` on macOS or `xdg-open` elsewhere. That's on the machine rex-dash runs on, so on a remote Rex server it opens there. Keys you add yourself run your own commands on a PR or an issue, such as starting an agent on it: see [Custom keys](#custom-keys).
@@ -35,6 +35,21 @@ While you type, letters go into the query, so keys such as `q` and `j` don't act
 | Backspace, Ctrl-W, Ctrl-U | Delete a character, a word or the whole query. Backspace on an empty query stops filtering |
 
 After Enter, `/` edits the filter and Esc clears it. PRs and issues are filtered from what the dashboard fetched, which is up to 30 of each.
+
+`/reply` keeps your PRs that have replies waiting on you. Since the filter is fuzzy, it also keeps any PR whose text has those letters in order.
+
+## Replies
+
+A reply waits on you in one of your PRs when either:
+
+- a review thread is unresolved and someone else wrote its last comment, or
+- someone else commented, requested changes or left a review comment after your last comment, review or commit.
+
+Each counts once in the `↩` number. Replying in the thread, or resolving it, clears a thread. Commenting or pushing clears the rest. Bots, such as Copilot and Claude, don't count. Approvals don't count either. A review with inline comments counts through its threads.
+
+The dashboard reads the last 20 threads, 10 reviews and 10 comments of each PR. That makes its PR query cost about 8 points of GitHub's 5,000 an hour, rather than 1. It runs every minute in every open dashboard.
+
+While replies wait on you, Rex shows the dashboard's pane as blocked, waiting on you, with a message such as "2 PRs need your reply". Then you can see it in Rex's sidebar when the dashboard is out of sight.
 
 ## Opening a worktree for a PR or an issue
 
@@ -163,7 +178,7 @@ rex split -b "$REX_BLOCK" --split=right --ratio 45 --label Cockpit --focus=false
 
 With several Rex apps connected, set `REX_CLIENT` to the one Enter should switch.
 
-In Rex's sidebar, the dashboard's pane shows as Rex Dash, with Rex's icon. Rex names a pane after its foreground program, so in a popup that runs it through `sh -c`, add `set -m;` before the command, for example `sh -c 'set -m; "$@"' sh rex-dash`. Otherwise the pane shows as the shell.
+In Rex's sidebar, the dashboard's pane shows as Rex Dash, with Rex's icon, and as blocked while [replies](#replies) wait on you. Rex names a pane after its foreground program, so in a popup that runs it through `sh -c`, add `set -m;` before the command, for example `sh -c 'set -m; "$@"' sh rex-dash`. Otherwise the pane shows as the shell.
 
 ## Usage
 
