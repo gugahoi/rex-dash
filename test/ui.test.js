@@ -71,3 +71,20 @@ test('issue link precedence, selected rows, repo heading, and screen scrolling',
   repo = { roots: ['/r'] };
   assert.ok(vis(sections.renderIssues({ issueCount: 1, nodes: [issue()] })[0]).includes('1 open'));
 });
+
+const pr = (number, replies) => ({ number, title: `pr ${number}`, isDraft: false, reviewDecision: null, updatedAt: new Date().toISOString(), repository: { name: 'r' }, commits: { nodes: [] }, replies });
+test('your PRs with replies waiting show how many, go first, count in the heading, and filter as reply', () => {
+  const filter = createFilter();
+  const sections = createSections({ getRepo: () => null, getSel: () => null, filter });
+  assert.match(vis(sections.prLine(pr(1, 3))), /r#1 ↩3 pr 1 /);
+  assert.doesNotMatch(vis(sections.prLine(pr(2, 0))), /↩/);
+  const mine = { issueCount: 4, nodes: [pr(1), pr(2, 2), pr(3, 0), pr(4, 1)] };
+  const rows = (d) => sections.renderPRs({ review: { issueCount: 0, nodes: [] }, mine: d }).map(vis);
+  const out = rows(mine);
+  assert.match(out.find((l) => l.includes('MY PRS')), /4 open · 2 need your reply/);
+  assert.deepEqual(out.filter((l) => /r#\d/.test(l)).map((l) => l.match(/r#(\d)/)[1]), ['2', '4', '1', '3']);
+  assert.match(rows({ issueCount: 1, nodes: [pr(4, 1)] }).find((l) => l.includes('MY PRS')), /1 open · 1 needs your reply/);
+  assert.doesNotMatch(rows({ issueCount: 1, nodes: [pr(1)] }).find((l) => l.includes('MY PRS')), /reply/);
+  filter.setQuery('reply');
+  assert.deepEqual(sections.shownPRs(mine).map((x) => x.item.number), [2, 4]);
+});

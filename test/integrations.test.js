@@ -4,8 +4,8 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
-const { fleet, focusPane, withEnv, openTab } = require('../lib/integrations/rex');
-const { prs, issues } = require('../lib/integrations/github');
+const { fleet, focusPane, withEnv, openTab, paneName } = require('../lib/integrations/rex');
+const { prs, issues, replies } = require('../lib/integrations/github');
 const { runWorktree, prepareWorktree } = require('../lib/integrations/wt');
 
 test('Rex adapter uses the existing JSON CLI commands, ranks status, and filters by worktree', async () => {
@@ -73,6 +73,58 @@ test('GitHub queries preserve repo and global scopes and reject repos without a 
   assert.match(calls[3][1][3], /assignee:@me/);
   await assert.rejects(() => prs({ gh: null }, run), /no GitHub remote/);
   await assert.rejects(() => issues({ gh: null }, run), /no GitHub remote/);
+});
+
+const me = { login: 'me', __typename: 'User' }, ann = { login: 'ann', __typename: 'User' }, bot = { login: 'copilot', __typename: 'Bot' };
+const thread = (author, isResolved = false) => ({ isResolved, comments: { nodes: [{ author, createdAt: '2026-01-01T00:00:00Z' }] } });
+const said = (author, day) => ({ author, createdAt: `2026-01-0${day}T00:00:00Z` });
+const review = (author, day, state = 'COMMENTED', inline = 0) => ({ author, state, submittedAt: `2026-01-0${day}T00:00:00Z`, comments: { totalCount: inline } });
+const activity = ({ threads = [], reviews = [], comments = [], commit = 5 }) => ({
+  reviewThreads: { nodes: threads }, reviews: { nodes: reviews }, comments: { nodes: comments },
+  commits: { nodes: [{ commit: { committedDate: `2026-01-0${commit}T00:00:00Z` } }] },
+});
+
+test('a reply waits on you in an unresolved thread where someone else has the last word, or after your last move', () => {
+  // threads: open with theirs last, resolved, open with yours last, a bot's, and one with no comments
+  assert.equal(replies(activity({ threads: [thread(ann), thread(ann, true), thread(me), thread(bot), { isResolved: false, comments: { nodes: [] } }] }), 'me'), 1);
+  // comments and reviews count after your last commit (day 5), comment or review, and not a bot's
+  assert.equal(replies(activity({ comments: [said(ann, 4), said(ann, 6), said(bot, 7)] }), 'me'), 1);
+  assert.equal(replies(activity({ comments: [said(ann, 6), said(me, 7)] }), 'me'), 0);
+  assert.equal(replies(activity({ comments: [said(ann, 6)], reviews: [review(me, 7)] }), 'me'), 0);
+  // a deleted account's comment counts
+  assert.equal(replies(activity({ comments: [said(null, 6)] }), 'me'), 1);
+  // reviews: changes and comments count, approvals don't, and inline comments count through their threads
+  assert.equal(replies(activity({ reviews: [review(ann, 6, 'CHANGES_REQUESTED'), review(ann, 6), review(ann, 6, 'APPROVED'), review(ann, 6, 'COMMENTED', 2)] }), 'me'), 2);
+  assert.equal(replies(activity({ commit: 8, reviews: [review(ann, 6, 'CHANGES_REQUESTED')] }), 'me'), 0);
+  // without knowing who you are, nothing counts
+  assert.equal(replies(activity({ threads: [thread(ann)] }), undefined), 0);
+});
+
+test('your PRs keep only their count of replies; review requests fetch none', async () => {
+  let query;
+  const run = async (cmd, args) => {
+    query = args[3];
+    return { data: {
+      viewer: { login: 'me' },
+      mine: { issueCount: 1, nodes: [{ number: 1, title: 't', ...activity({ threads: [thread(ann), thread(ann)] }) }] },
+      review: { issueCount: 1, nodes: [{ number: 2, title: 'u', commits: { nodes: [] } }] },
+    } };
+  };
+  const d = await prs(null, run);
+  assert.match(query, /viewer \{ login \}/);
+  assert.match(query, /mine: search\([^)]*\) \{ issueCount nodes \{ \.\.\.pr \.\.\.replies \} \}/);
+  assert.match(query, /review: search\([^)]*\) \{ issueCount nodes \{ \.\.\.pr \} \}/);
+  assert.deepEqual(Object.keys(d.mine.nodes[0]), ['number', 'title', 'commits', 'replies']);
+  assert.equal(d.mine.nodes[0].replies, 2);
+  assert.deepEqual(d.review.nodes[0], { number: 2, title: 'u', commits: { nodes: [] } });
+});
+
+test('the pane\'s Rex status is blocked, with a base64 message, while replies wait on you', () => {
+  assert.equal(paneName(0), '\x1b]2;Rex Dash\x07\x1b]7501;state=idle:id=rex-dash:app=rex\x07');
+  const status = (n) => paneName(n).match(/7501;state=(\w+):id=rex-dash:app=rex(?::msg=([^\x07]+))?\x07$/);
+  assert.equal(status(2)[1], 'blocked');
+  assert.equal(Buffer.from(status(2)[2], 'base64').toString(), '2 PRs need your reply');
+  assert.equal(Buffer.from(status(1)[2], 'base64').toString(), '1 PR needs your reply');
 });
 
 test('wt takes and restores the terminal on success, failure, and missing executable', async () => {
