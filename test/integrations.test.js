@@ -5,7 +5,7 @@ const { EventEmitter } = require('node:events');
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const { fleet, focusPane, withEnv, openTab, paneName } = require('../lib/integrations/rex');
-const { prs, issues, replies } = require('../lib/integrations/github');
+const { prs, issues, replies, details, detailQuery } = require('../lib/integrations/github');
 const { runWorktree, prepareWorktree } = require('../lib/integrations/wt');
 
 test('Rex adapter uses the existing JSON CLI commands, ranks status, and filters by worktree', async () => {
@@ -73,6 +73,23 @@ test('GitHub queries preserve repo and global scopes and reject repos without a 
   assert.match(calls[3][1][3], /assignee:@me/);
   await assert.rejects(() => prs({ gh: null }, run), /no GitHub remote/);
   await assert.rejects(() => issues({ gh: null }, run), /no GitHub remote/);
+});
+
+test('a PR\'s or issue\'s details are fetched by its URL, passed as a variable, not in the query', async () => {
+  const calls = [];
+  const run = (resource) => async (cmd, args) => { calls.push([cmd, args]); return { data: { viewer: { login: 'me' }, resource } }; };
+  const url = 'https://github.com/o/r/pull/3"){ x }';
+  assert.deepEqual(await details(url, run({ __typename: 'PullRequest', number: 3 })), { __typename: 'PullRequest', number: 3, viewer: 'me' });
+  const [cmd, args] = calls[0];
+  assert.equal(cmd, 'gh');
+  assert.deepEqual(args.slice(0, 3), ['api', 'graphql', '-f']);
+  assert.equal(args[3], `query=${detailQuery}`);
+  assert.deepEqual(args.slice(4), ['-f', `url=${url}`]);
+  assert.match(detailQuery, /query\(\$url: URI!\)/);
+  assert.match(detailQuery, /reviewThreads\(first: 100\) \{ totalCount nodes \{\s+isResolved/);
+  assert.equal((await details('u', run({ __typename: 'Issue', number: 7 }))).number, 7);
+  await assert.rejects(() => details('https://github.com/o/r', run(null)), /GitHub has no PR or issue at https:\/\/github.com\/o\/r/);
+  await assert.rejects(() => details('https://github.com/o', run({ __typename: 'User' })), /no PR or issue/);
 });
 
 const me = { login: 'me', __typename: 'User' }, ann = { login: 'ann', __typename: 'User' }, bot = { login: 'copilot', __typename: 'Bot' };
