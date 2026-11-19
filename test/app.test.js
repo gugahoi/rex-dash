@@ -223,3 +223,95 @@ test('once leaves out the sections the config hides, without the keys to show th
   for (const section of ['USAGE', 'MY PRS', 'ISSUES']) assert.ok(text.includes(section), section);
   for (const section of ['FLEET', 'REVIEW REQUESTS', 'hidden']) assert.ok(!text.includes(section), section);
 });
+
+test('l or → opens the selected PR\'s or issue\'s page, which scrolls, and ←, esc or backspace go back to the same selection', async () => {
+  const fetched = [];
+  let fail = null, release;
+  const body = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n\n');
+  const integrations = {
+    details: async (url) => {
+      fetched.push(url);
+      if (release) await new Promise((r) => { release = r; });
+      if (fail) throw new Error(fail);
+      return { __typename: 'Issue', viewer: 'me', number: 7, title: 'fix it', url, state: 'OPEN', body, author: { login: 'ann' }, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z', assignees: { nodes: [] }, labels: { nodes: [] }, closedByPullRequestsReferences: { nodes: [] }, comments: { totalCount: 0, nodes: [] } };
+    },
+  };
+  const config = parseConfig({ keymaps: { a: { label: 'agent', command: 'claude' }, R: { label: 'review', command: { pr: 'claude' } } } });
+  const app = createApp({ stdout: { columns: 100, rows: 20, write() {} }, config, integrations }), { state } = app;
+  state.fleet = [{ label: 'web', panes: [pane('b1', 'coding', 'web')] }];
+  state.prs = { review: { issueCount: 0, nodes: [] }, mine: { issueCount: 1, nodes: [{ ...pr(3), url: null }] } };
+  state.issues = { issueCount: 1, nodes: [{ ...issue(7, 'fix it'), url: 'https://github.com/o/r/issues/7' }] };
+  const text = () => app.frame().map(vis);
+  const header = () => text()[0];
+
+  assert.match(text()[1], /\[⏎\] open {2}\[l\/→\] details {2}\[o\] browser/);
+  await app.press('l'); // nothing selected
+  assert.match(header(), /pick a PR or issue with j\/k first/);
+  app.press('j');
+  await app.press('\x1b[C'); // an agent
+  assert.match(header(), /pick a PR or issue with j\/k first/);
+  app.press('j');
+  await app.press('l'); // a PR cached before URLs were fetched
+  assert.match(header(), /no link yet: wait for the refresh/);
+  assert.deepEqual(fetched, []);
+
+  app.press('j');
+  await app.press('l');
+  assert.deepEqual(fetched, ['https://github.com/o/r/issues/7']);
+  let rows = text();
+  assert.match(rows[1], /^\[←\] back {2}\[j\/k\] scroll 1-16 of \d+ {2}\[⏎\] worktree {2}\[o\] browser {2}\[a\] agent {2}\[r\] refresh {2}\[q\] quit$/);
+  const of = () => text()[1].match(/scroll (\d+)-(\d+) of (\d+)/).slice(1).map(Number);
+  assert.equal(rows.length, 3 + of()[2]); // the page goes on below the screen, from where it's scrolled to
+  assert.deepEqual(rows.slice(4, 6), ['ISSUE r#7  ', '  fix it']);
+  assert.ok(!rows.some((l) => /FLEET|ISSUES/.test(l)));
+  assert.deepEqual(app.page(), { key: 'r#7', url: 'https://github.com/o/r/issues/7' }); // o and keymaps act on it
+
+  app.press('j'); app.press('j');
+  assert.equal(text()[3], '  fix it');
+  assert.deepEqual(of().slice(0, 2), [3, 18]);
+  app.press('k');
+  assert.equal(text()[3], 'ISSUE r#7  ');
+  app.press(' ');
+  assert.deepEqual(of().slice(0, 2), [17, 32]);
+  app.press('\x1b[F'); // end
+  const total = of()[2];
+  assert.deepEqual(of(), [total - 15, total, total]);
+  assert.deepEqual(text().slice(-4), ['  line 39', '', 'COMMENTS  0', '  none']);
+  app.press('j'); // no further
+  assert.deepEqual(of(), [total - 15, total, total]);
+  app.press('\x1b[H'); // home
+  assert.deepEqual(of().slice(0, 2), [1, 16]);
+  app.press('/'); app.press('1'); // the lists' keys don't act on a page
+  assert.match(text()[1], /^\[←\] back/);
+
+  for (const back of ['\x1b[D', '\x1b', '\x7f']) {
+    app.press(back);
+    assert.ok(text().some((l) => l.startsWith('▸ ·') && l.includes('r#7 fix it')), 'the issue stays selected');
+    await app.press('l');
+  }
+
+  // the page shows what was fetched before at once, while it's fetched again; a failed fetch keeps it, and says so
+  app.press('\x1b');
+  fail = 'HTTP 502';
+  release = true;
+  const again = app.press('l');
+  assert.ok(text().some((l) => l === '  line 0'));
+  release();
+  await again;
+  assert.match(text()[3], /^ {2}couldn't refresh: HTTP 502$/);
+  assert.ok(text().some((l) => l === '  line 0'));
+  release = null;
+  fail = null;
+  app.press('\x1b');
+  await app.press('l');
+  assert.ok(!text().some((l) => l.includes("couldn't")));
+  assert.equal(fetched.length, 6);
+
+  // → keeps a typed filter, and opens the best match's page
+  app.press('\x1b'); app.press('/');
+  for (const key of 'fix') app.press(key);
+  await app.press('\x1b[C');
+  assert.match(text()[1], /^\[←\] back/);
+  app.press('\x1b');
+  assert.match(text()[1], /^\/fix {2}\[esc\] clear/);
+});

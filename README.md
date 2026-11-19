@@ -14,7 +14,7 @@ It shows:
 - **My PRs:** up to 10 of your open PRs, with CI, review and draft state. A yellow `↩2` means two replies are waiting on you. Those PRs come first, and the heading counts them. See [Replies](#replies).
 - **Issues:** open issues assigned to you, most recently updated first. Each shows its labels in their GitHub colours, then its author, assignees, comment count, milestone and linked PRs. A `⇄` marks an issue with a linked PR, one that would close it, coloured by the most active one: green open, yellow draft, magenta merged, dim closed.
 
-Keys: `j`/`k` or the arrow keys select an agent, a PR or an issue, scrolling the dashboard to keep the selection in view; `/` filters the lists; `1` to `5` hide and show the sections (see [Hiding sections](#hiding-sections)); `s` cycles the shader, `e` cycles the effects, `r` refreshes, `q` quits. Enter on an agent shows its pane in the Rex app. Enter on a PR or an issue opens a worktree for it. `o` on a PR or an issue opens its GitHub page in your browser, with `open` on macOS or `xdg-open` elsewhere. That's on the machine rex-dash runs on, so on a remote Rex server it opens there. Keys you add yourself run your own commands on a PR or an issue, such as starting an agent on it: see [Custom keys](#custom-keys).
+Keys: `j`/`k` or the arrow keys select an agent, a PR or an issue, scrolling the dashboard to keep the selection in view; `l` or → opens the selected PR's or issue's page in the dashboard, with a PR's unresolved review threads and an issue's text (see [PR and issue pages](#pr-and-issue-pages)); `/` filters the lists; `1` to `5` hide and show the sections (see [Hiding sections](#hiding-sections)); `s` cycles the shader, `e` cycles the effects, `r` refreshes, `q` quits. Enter on an agent shows its pane in the Rex app. Enter on a PR or an issue opens a worktree for it. `o` on a PR or an issue opens its GitHub page in your browser, with `open` on macOS or `xdg-open` elsewhere. That's on the machine rex-dash runs on, so on a remote Rex server it opens there. Keys you add yourself run your own commands on a PR or an issue, such as starting an agent on it: see [Custom keys](#custom-keys).
 
 ## Filtering
 
@@ -30,6 +30,7 @@ While you type, letters go into the query, so keys such as `q` and `j` don't act
 | Key | Action |
 | --- | --- |
 | Enter | Keep the filter and go back to the usual keys, so `j`/`k` select among the matches |
+| → | Keep the filter, and open the selected PR's or issue's [page](#pr-and-issue-pages) |
 | Esc or Ctrl-C | Clear the filter |
 | ↑/↓, Ctrl-N/Ctrl-P | Select |
 | Backspace, Ctrl-W, Ctrl-U | Delete a character, a word or the whole query. Backspace on an empty query stops filtering |
@@ -74,6 +75,35 @@ Each counts once in the `↩` number. Replying in the thread, or resolving it, c
 The dashboard reads the last 20 threads, 10 reviews and 10 comments of each PR. That makes its PR query cost about 8 points of GitHub's 5,000 an hour, rather than 1. It runs every minute in every open dashboard, unless both review requests and my PRs are [hidden](#hiding-sections).
 
 While replies wait on you, Rex shows the dashboard's pane as blocked, waiting on you, with a message such as "2 PRs need your reply". Then you can see it in Rex's sidebar when the dashboard is out of sight. While my PRs is [hidden](#hiding-sections), it doesn't.
+
+## PR and issue pages
+
+`l` or → on a PR or an issue shows its page in place of the lists, to read without leaving the dashboard.
+
+A PR's page shows:
+
+- its state, review decision, author, branches, size and checks, naming the ones that fail;
+- its **unresolved review threads**, each with its file and line, the last lines of the diff it's on, and every comment. A yellow `↩` marks a thread that waits on you, as in [Replies](#replies): someone else, not a bot, has the last word, in your PR or in a thread you wrote in. Those come first. Resolved threads aren't shown, but the heading counts them;
+- its description;
+- its conversation: the latest comments and reviews, oldest first. In your PR, a `↩` marks the ones that came after your last comment, review or commit.
+
+An issue's page shows its state, author, assignees, milestone, labels and linked PRs, then its **text**, then its latest comments.
+
+The text is Markdown, shown much as written, wrapped to the pane: headings are bold, and quotes and code blocks dim. HTML comments, such as a template's hints, and the usual HTML tags are left out, and images show as `[image]`. A long comment shows its first lines, then says how many more there are: `o` opens the page in your browser.
+
+On a page:
+
+| Key | Action |
+| --- | --- |
+| ←, Esc or Backspace | Go back to the lists, with the same selection |
+| `j`/`k` or ↓/↑ | Scroll a line |
+| Space or Ctrl-F, Ctrl-B | Scroll a screen down or up. Page Down and Page Up too |
+| Ctrl-D, Ctrl-U | Scroll half a screen |
+| Home, End | Go to the top or the bottom |
+| Enter, `o`, your keys | As in the lists: open a worktree, the browser, or run your command, for this PR or issue |
+| `r` | Refresh the page, and the dashboard |
+
+The key bar shows which lines are on screen, such as `scroll 1-20 of 154`. The page is fetched from GitHub when it opens, on `r`, and every minute while it shows. A page you opened before shows at once, while it's fetched again. It costs about 2 points of GitHub's 5,000 an hour, and reads the first 100 review threads, with 30 comments each, and the latest 20 comments and reviews of a PR, or 30 comments of an issue. Pages aren't cached on disk.
 
 ## Opening a worktree for a PR or an issue
 
@@ -133,7 +163,7 @@ The command gets the PR or issue, and its worktree, in variables:
 
 Use them, in double quotes, rather than putting their text in the command. Anyone can write an issue's title, and in `"$REX_DASH_TITLE"` it stays text, never a command. The command runs where Rex runs commands, in your login shell's environment, so your `PATH` applies but your aliases don't.
 
-A key is a single character, and case matters: `a` and `A` are different keys. The dashboard's own keys can't be mapped: `j`, `k`, `o`, `q`, `r`, `s`, `e`, `/` and `1` to `5`. A key that's wrong is left out, and the header says why. `r` reads the file again, so you can try a change without restarting. Like Enter, your keys need repo mode.
+A key is a single character, and case matters: `a` and `A` are different keys. The dashboard's own keys can't be mapped: `j`, `k`, `l`, `o`, `q`, `r`, `s`, `e`, `/` and `1` to `5`. Your keys work on a [PR's or issue's page](#pr-and-issue-pages) too, for that PR or issue. A key that's wrong is left out, and the header says why. `r` reads the file again, so you can try a change without restarting. Like Enter, your keys need repo mode.
 
 ## Repo mode
 
@@ -212,11 +242,11 @@ rex-dash --once   print one frame and exit
 rex-dash --test   run the self-check
 ```
 
-The fleet refreshes every 3 seconds, PRs and issues every minute and usage every 5 minutes, while they show.
+The fleet refreshes every 3 seconds, PRs and issues every minute and usage every 5 minutes, while they show. A PR's or issue's page refreshes every minute while it shows.
 
 ## Development
 
-The source executable is a small entry point. `lib/app.js` owns dashboard state and refreshes; `lib/config.js` reads your keys and hidden sections; `lib/integrations/` calls Rex, GitHub and wt; `lib/storage.js` and `lib/usage.js` manage persisted data; and `lib/ui/` handles the terminal view and input. There is no runtime npm dependency. The release build uses Node 24, esbuild and postject **at build time** to bundle those modules into a single executable containing Node.
+The source executable is a small entry point. `lib/app.js` owns dashboard state and refreshes; `lib/config.js` reads your keys and hidden sections; `lib/integrations/` calls Rex, GitHub and wt; `lib/storage.js` and `lib/usage.js` manage persisted data; and `lib/ui/` handles the terminal view and input, with `lib/ui/detail.js` drawing a PR's or issue's page. There is no runtime npm dependency. The release build uses Node 24, esbuild and postject **at build time** to bundle those modules into a single executable containing Node.
 
 ```sh
 ./rex-dash --test                      # source self-check

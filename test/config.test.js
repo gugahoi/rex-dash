@@ -34,7 +34,7 @@ test('wrong keymaps are reported and left out, and the right ones still load', (
       ok: { command: 'x' }, ' ': { command: 'x' }, '\x01': { command: 'x' }, j: { command: 'x' }, '/': { command: 'x' },
       a: 'claude', b: { command: '' }, c: { command: { issue: 'x', branch: 'y' } }, d: { command: { issue: 'x' }, on: ['pr'] },
       m: { command: 'x', on: ['agent'] }, f: { command: 'x', background: 'no' }, g: { command: 'x', session: 'new' },
-      h: { command: 'x', focus: true }, i: { command: 'a\0b' }, l: { command: 'x', label: ' ' },
+      h: { command: 'x', focus: true }, i: { command: 'a\0b' }, t: { command: 'x', label: ' ' },
       '\u21e2': { command: 'x' },
     },
   });
@@ -44,12 +44,13 @@ test('wrong keymaps are reported and left out, and the right ones still load', (
     /unknown field "keymap"/, /"ok" isn't a single/, /" " isn't a single/, /isn't a single/, /"j" is one of the dashboard's own keys/,
     /"\/" is one/, /"a" needs an object/, /"b" needs a non-empty command/, /"c": command's keys are issue and pr/,
     /"d" is on pr but has no command/, /"m": on is a list/, /"f": background is true or false/, /"g": session is/,
-    /"h" has an unknown field "focus"/, /"i" needs a non-empty command/, /"l": label/,
+    /"h" has an unknown field "focus"/, /"i" needs a non-empty command/, /"t": label/,
   ].entries()) assert.match(errors[i], pattern);
   assert.deepEqual(parseConfig([]).errors, ['the config is a JSON object']);
   assert.deepEqual(parseConfig({ keymaps: [] }).errors, ['keymaps is an object of keys']);
-  for (const key of 'jkoqrse/12345') assert.ok(BUILT_IN.includes(key));
+  for (const key of 'jkloqrse/12345') assert.ok(BUILT_IN.includes(key));
   assert.match(parseConfig({ keymaps: { 1: { command: 'x' } } }).errors[0], /"1" is one of the dashboard's own keys/);
+  assert.match(parseConfig({ keymaps: { l: { command: 'x' } } }).errors[0], /"l" is one of the dashboard's own keys/);
 });
 
 test('hide lists the sections that start hidden, and wrong ones are reported and left out', () => {
