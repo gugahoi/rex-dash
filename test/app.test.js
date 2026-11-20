@@ -161,7 +161,7 @@ test('a keymap needs the repo, as wt does', async () => {
   assert.match(vis(app.frame()[0]), /start rex-dash in the repo to run \[a\] agent in a worktree/);
 });
 
-test('keys 1 to 5 hide and show sections for the session, starting from the config, and hidden ones are not selected', () => {
+test('keys 1 to 6 hide and show sections for the session, starting from the config, and hidden ones are not selected', () => {
   const writes = [];
   const config = parseConfig({ hide: ['usage', 'issues'] });
   const app = createApp({ stdout: { columns: 300, rows: 60, write: (s) => writes.push(s) }, config }), { state } = app;
@@ -174,11 +174,11 @@ test('keys 1 to 5 hide and show sections for the session, starting from the conf
   const status = () => writes.map((s) => s.match(/\x1b\]7501;state=(\w+)/)).filter(Boolean).at(-1)?.[1];
 
   assert.deepEqual(headings(), ['FLEET', 'REVIEW REQUESTS', 'MY PRS']);
-  assert.match(vis(app.frame()[0]), /hidden \[2\] usage \[5\] issues/);
-  assert.match(vis(app.frame()[1]), /\[\/\] filter {2}\[1-5\] hide {2}\[s\] shader/);
+  assert.match(vis(app.frame()[0]), /hidden \[2\] usage \[6\] issues/);
+  assert.match(vis(app.frame()[1]), /\[\/\] filter {2}\[1-6\] hide {2}\[s\] shader/);
   assert.deepEqual(app.selectable().map((x) => x.key), ['b1', 'r#3', 'r#4']);
 
-  app.press('5'); app.press('1'); app.press('3');
+  app.press('6'); app.press('1'); app.press('3');
   assert.deepEqual(headings(), ['MY PRS', 'ISSUES']);
   assert.match(vis(app.frame()[0]), /hidden \[1\] fleet \[2\] usage \[3\] review requests/);
   assert.deepEqual(app.selectable().map((x) => x.key), ['r#4', 'r#7']);
@@ -244,12 +244,12 @@ test('l or → opens the selected PR\'s or issue\'s page, which scrolls, and ←
   const text = () => app.frame().map(vis);
   const header = () => text()[0];
 
-  assert.match(text()[1], /\[⏎\] open {2}\[l\/→\] details {2}\[o\] browser/);
+  assert.match(text()[1], /\[⏎\] open {2}\[l\/→\] details {2}\[t\] stack {2}\[o\] browser/);
   await app.press('l'); // nothing selected
-  assert.match(header(), /pick a PR or issue with j\/k first/);
+  assert.match(header(), /pick a PR, stack or issue with j\/k first/);
   app.press('j');
   await app.press('\x1b[C'); // an agent
-  assert.match(header(), /pick a PR or issue with j\/k first/);
+  assert.match(header(), /pick a PR, stack or issue with j\/k first/);
   app.press('j');
   await app.press('l'); // a PR cached before URLs were fetched
   assert.match(header(), /no link yet: wait for the refresh/);
@@ -420,4 +420,154 @@ test('Ctrl-D/U, Ctrl-F/B, Page Down/Up, Home and End scroll the lists as in Vim,
   assert.deepEqual(where(), ['r#73', 35, 14]);
   stdout.rows = 10;
   assert.deepEqual(where(), ['r#73', 45, 4]);
+});
+
+// A repo with one stack of three: r#1 yours, r#2 fetched with the stack, r#3 merged.
+const stacked = (number, position, more = {}) => ({ ...pr(number), title: `pr ${number}`, status: 'review', stack: { id: 'S9', number: 9, size: 3 }, stackEntry: { position }, ...more });
+const stackState = () => ({
+  pages: [{ path: 'p', etag: 'e', stacks: [{ id: 'S9', number: 9, repo: 'r', base: 'main', url: 'https://github.com/o/r/stack/9', members: [
+    { number: 1, state: 'OPEN', isDraft: false, head: 'b1' }, { number: 2, state: 'OPEN', isDraft: false, head: 'b2' }, { number: 3, state: 'MERGED', isDraft: false, head: 'b3' },
+  ] }] }],
+  prs: { 2: stacked(2, 2, { status: 'approved' }), 3: stacked(3, 3, { state: 'MERGED', status: 'merged' }) },
+});
+const repoApp = (integrations = {}, config) => {
+  const repo = { roots: ['/r'], gh: 'o/r', name: 'o/r' };
+  const app = createApp({ stdout: { columns: 160, rows: 60, write() {} }, repo, config, integrations });
+  Object.assign(app.state, { prs: { review: { issueCount: 0, nodes: [] }, mine: { issueCount: 2, nodes: [stacked(1, 1), pr(4)] } }, stacks: stackState() });
+  return app;
+};
+
+test('in a repo, the stacks section shows after your PRs, and j/k go through its stacks and their PRs, apart from your PRs\' rows', () => {
+  const app = repoApp(), text = () => app.frame().map(vis);
+  const at = (s) => text().findIndex((l) => l.includes(s));
+  assert.ok(at('MY PRS') < at('STACKS') && at('STACKS') > 0);
+  assert.match(text()[at('STACKS')], /STACKS {2}1 open in the repo/);
+  assert.deepEqual(app.selectable().map((x) => `${x.kind} ${x.id}`), ['pr r#1', 'pr r#4', 'stack r#9', 'pr r#9/r#1', 'pr r#9/r#2', 'pr r#9/r#3']);
+  for (let i = 0; i < 6; i++) app.press('j');
+  const marked = () => text().filter((l) => l.startsWith('▸'));
+  assert.equal(marked().length, 1);
+  assert.match(marked()[0], /^▸ {4}3 · merged {3}r#3 pr 3/); // past r#1's row in the stack, though r#1 is in your PRs too
+  app.press('k'); app.press('k');
+  assert.match(marked()[0], /^▸ {4}1 · review {3}r#1 pr 1/);
+  app.press('k');
+  assert.match(marked()[0], /^▸ ⧉ r#9 → main/);
+  assert.deepEqual(app.page(), { key: 'r#9', url: 'https://github.com/o/r/stack/9' }); // Enter and o open it in the browser
+  app.press('5');
+  assert.equal(at('STACKS'), -1);
+  assert.match(text()[0], /hidden \[5\] stacks/);
+  assert.deepEqual(app.selectable().map((x) => x.id), ['r#1', 'r#4']);
+  // stacks cached without PRs: theirs show as fetched, or as their branch
+  app.press('5');
+  delete app.state.prs;
+  assert.deepEqual(app.selectable().map((x) => x.id), ['r#9', 'r#9/r#1', 'r#9/r#2', 'r#9/r#3']);
+  assert.ok(text().some((l) => / 1 · review {3}r#1 b1$/.test(l)));
+});
+
+test('l or t open a stack\'s page from the lists, where j/k select its PRs, l opens one, t opens a PR\'s stack, and ← goes back, page by page', async () => {
+  const fetched = [];
+  const integrations = {
+    details: async (url) => { fetched.push(url); return { __typename: 'PullRequest', number: +url.split('/').at(-1), title: 'from GitHub', url, state: 'OPEN', repository: { name: 'r' }, stack: { id: 'S9', number: 9, size: 3 }, stackEntry: { position: 2 } }; },
+    stack: async () => { throw new Error('the repo\'s stacks have it'); },
+  };
+  const app = repoApp(integrations), text = () => app.frame().map(vis);
+  for (const key of 'jjj') app.press(key); // r#1 and r#4 in your PRs, then the stack's row
+  await app.press('l');
+  assert.match(text()[1], /^\[←\] back {2}\[j\/k\] select {2}\[l\/→\] details {2}\[⏎\/o\] browser {2}\[r\] refresh {2}\[q\] quit$/);
+  assert.equal(text()[4], 'STACK r#9  ');
+  assert.ok(text().some((l) => /^▸ {2}1 · review {3}#1 pr 1/.test(l)));
+  assert.deepEqual(app.page(), { key: 'r#9', url: 'https://github.com/o/r/stack/9' });
+  app.press('j');
+  assert.ok(text().some((l) => /^▸ {2}2 · approved #2 pr 2/.test(l)));
+  app.press('j'); app.press('j'); // no further than the last
+  assert.ok(text().some((l) => /^▸ {2}3 · merged/.test(l)));
+  app.press('k');
+  await app.press('l');
+  assert.deepEqual(fetched, ['https://github.com/o/r/pull/2']);
+  assert.equal(text()[4], 'PR r#2  ');
+  assert.match(text()[1], /\[o\] browser {2}\[t\] stack {2}\[r\] refresh/);
+  assert.ok(text().includes('  ▸  2 ● approved #2 pr 2')); // its stack, from the repo's
+  await app.press('t'); // the stack again, in front of the PR's page
+  assert.ok(text().some((l) => /^▸ {2}2 · approved #2/.test(l)));
+  for (const page of ['PR r#2  ', 'STACK r#9  ']) { app.press('\x1b[D'); assert.equal(text()[4], page); }
+  app.press('\x1b');
+  assert.ok(text().some((l) => l.startsWith('▸ ⧉ r#9')), 'the stack stays selected');
+
+  // t on a PR in your PRs opens its stack at it; on a PR in no stack, says so
+  app.press('k'); app.press('k');
+  await app.press('t');
+  assert.ok(text().some((l) => /^▸ {2}1 · review/.test(l)));
+  app.press('\x7f');
+  app.press('j');
+  app.press('t');
+  assert.match(text()[0], /r#4 isn't in a stack/);
+});
+
+test('outside a repo there\'s no stacks section, but t still opens a stacked PR\'s stack, which its page fetches', async () => {
+  const asked = [];
+  const app = createApp({ stdout: { columns: 160, rows: 60, write() {} }, integrations: { stack: async (id) => { asked.push(id); return stackState(); } } });
+  Object.assign(app.state, { prs: { review: { issueCount: 0, nodes: [] }, mine: { issueCount: 1, nodes: [stacked(1, 1)] } }, stacks: stackState() });
+  const text = () => app.frame().map(vis);
+  assert.ok(!text().some((l) => l.includes('STACKS')));
+  assert.deepEqual(app.selectable().map((x) => x.id), ['r#1']);
+  app.press('5');
+  assert.match(text()[0], /stacks show in repo mode/);
+  assert.doesNotMatch(text()[0], /hidden/);
+  app.press('j');
+  await app.press('t');
+  assert.deepEqual(asked, ['S9']);
+  assert.equal(text()[4], 'STACK r#9  ');
+  assert.ok(text().some((l) => /^▸ {2}1 · review/.test(l)));
+});
+
+test('the repo\'s stacks are fetched after the PRs, from their PRs, and not at all while hidden or outside a repo', async () => {
+  const calls = [];
+  const listed = { review: { issueCount: 0, nodes: [] }, mine: { issueCount: 0, nodes: [] } };
+  const integrations = {
+    fleet: async () => [],
+    prs: async () => { calls.push('prs'); await new Promise((r) => setTimeout(r, 5)); return listed; },
+    stacks: async (repo, { prs, cached }) => { calls.push(['stacks', repo.gh, prs === listed, cached]); return stackState(); },
+    issues: async () => ({ issueCount: 0, nodes: [] }),
+  };
+  const config = parseConfig({ hide: ['usage'] });
+  const app = repoApp(integrations, config);
+  const before = app.state.stacks;
+  await Promise.all(app.refreshAll());
+  assert.deepEqual(calls, ['prs', ['stacks', 'o/r', true, before]]);
+  assert.equal(app.state.stacks.pages[0].stacks[0].number, 9);
+
+  calls.length = 0;
+  app.press('5'); // hidden
+  await Promise.all(app.refreshAll());
+  assert.deepEqual(calls, ['prs']);
+  calls.length = 0;
+  const outside = createApp({ stdout: { columns: 100, rows: 30, write() {} }, config, integrations });
+  await Promise.all(outside.refreshAll());
+  assert.deepEqual(calls, ['prs']);
+});
+
+test('Ctrl-D/U, Home and End scroll through stacks and their PRs, apart from the same PRs in your PRs', () => {
+  const stdout = { columns: 160, rows: 10, write() {} }; // 6 rows for the lists
+  const config = { keymaps: new Map(), hide: new Set(['fleet', 'usage', 'review_requests', 'issues']), errors: [] };
+  const app = createApp({ stdout, config, repo: { roots: ['/r'], gh: 'o/r', name: 'o/r' } });
+  Object.assign(app.state, { prs: { review: { issueCount: 0, nodes: [] }, mine: { issueCount: 2, nodes: [stacked(1, 1), pr(4)] } }, stacks: stackState() });
+  // MY PRS: a blank row, its heading and 2 PRs, at rows 0 to 3. STACKS: a blank row, its heading, the stack and
+  // its 3 PRs, at 4 to 9.
+  const shown = () => app.frame().slice(3).map(vis);
+  const marked = () => shown().filter((l) => l.startsWith('▸ '));
+  app.press('\x1b[F'); // End: the stack's last PR, at the bottom
+  assert.equal(marked().length, 1);
+  assert.match(marked()[0], /^▸ {4}3 · merged/);
+  assert.match(shown()[1], /^STACKS/);
+  app.press('k'); app.press('k');
+  assert.match(marked()[0], /^▸ {4}1 · review {3}r#1/); // the stack's r#1, not your PRs'
+  assert.match(shown()[1], /^STACKS/); // still on screen, so no scroll
+  app.press('\x15'); // Ctrl-U: 3 rows up, from the stack's r#1 at row 7 to row 4, and r#4 at row 3 is nearest
+  assert.equal(marked().length, 1);
+  assert.match(marked()[0], /^▸ · review {3}r#4 a pr/);
+  assert.match(shown()[0], /^MY PRS/);
+  app.press('\x04'); // Ctrl-D: 3 rows down, from row 3 to row 6, the stack's row
+  assert.match(marked()[0], /^▸ ⧉ r#9 → main/);
+  app.press('\x1b[H'); // Home
+  assert.match(marked()[0], /^▸ · review {3}r#1 ⧉1\/3/);
+  assert.match(shown()[1], /^MY PRS/);
 });
