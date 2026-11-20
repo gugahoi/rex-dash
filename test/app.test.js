@@ -1,9 +1,22 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { createApp } = require('../lib/app');
 const { parseConfig } = require('../lib/config');
-const { vis } = require('../lib/utils');
+const { vis, dim } = require('../lib/utils');
+const { BAND } = require('../lib/ui/effects');
+
+// The keys ? shows, as text, at most w columns by h rows; ? again closes them.
+const keysOf = (app, w = 100, h = 40) => {
+  app.press('?');
+  const box = app.popup(w, h);
+  app.press('?');
+  return box.map(vis).join('\n');
+};
 
 const issue = (number, title) => ({
   number, title, url: null, updatedAt: new Date().toISOString(), repository: { name: 'r' }, author: { login: 'ann' },
@@ -30,7 +43,7 @@ test('keyboard filtering, selection, visible PR limit, and browser URL restricti
   app.press('\x1b'); // clear kept filter
   assert.deepEqual(app.selectable().map((x) => x.key), ['b1', 'b2', 'r#7', 'r#8']);
   app.press('/'); app.press('\x7f');
-  assert.ok(app.frame()[1].includes('[j/k]')); // backspace on an empty filter exits editing
+  assert.equal(app.frame()[1], BAND); // backspace on an empty filter exits editing, and takes its row away
   state.prs = { review: { issueCount: 1, nodes: [pr(3)] }, mine: { issueCount: 12, nodes: Array.from({ length: 12 }, (_, k) => pr(20 + k)) } };
   assert.deepEqual(app.selectable().map((x) => `${x.kind} ${x.key}`),
     ['agent b1', 'agent b2', 'pr r#3', ...Array.from({ length: 10 }, (_, k) => `pr r#${20 + k}`), 'issue r#7', 'issue r#8']);
@@ -43,6 +56,72 @@ test('keyboard filtering, selection, visible PR limit, and browser URL restricti
   state.prsErr = 'offline';
   app.setQuery('');
   assert.deepEqual(app.selectable().map((x) => x.kind), ['agent', 'agent', 'issue', 'issue']);
+});
+
+test('? shows the keys over the dashboard, for what shows, and the next key only closes them', async () => {
+  const config = parseConfig({ keymaps: { a: { label: 'agent', command: 'claude' }, R: { label: 'review', command: { pr: 'claude' } } } });
+  const integrations = { details: async () => { throw new Error('offline'); } };
+  const app = createApp({ stdout: { columns: 100, rows: 40, write() {} }, config, integrations }), { state } = app;
+  state.issues = { issueCount: 1, nodes: [{ ...issue(7, 'fix it'), url: 'https://github.com/o/r/issues/7' }] };
+  const text = () => app.frame().map(vis), shown = () => app.popup(100, 40)?.map(vis).join('\n') ?? null;
+  assert.match(text()[0], / {2}\[\?\] keys$/);
+  assert.equal(text()[1], BAND); // no key bar
+  assert.equal(shown(), null);
+
+  app.press('?');
+  const keys = shown();
+  assert.match(keys, /^╭─ keys ─+╮$/m);
+  for (const k of [/│ j\/k ↑\/↓ +select +│/, /│ \^D \^U +half a screen down, up +│/, /│ \/ +filter +│/, /│ s e +shader aurora · effects bloom\+scanlines +│/, /│ a +agent {2}issue, PR +│/, /^├─ your keys ─+┤$/m, /│ R +review {2}PR +│/, /^╰─ any key closes this ─+╯$/m]) {
+    assert.match(keys, k);
+  }
+  assert.doesNotMatch(keys, /5 stacks/); // outside a repo
+  assert.ok(app.popup(40, 12).every((l) => vis(l).length === 38), 'a small pane cuts it');
+  assert.match(app.popup(40, 12).map(vis).at(-2), /│ … +│/);
+
+  // the key that closes them does nothing else: not move, quit or launch
+  app.press('j');
+  assert.equal(shown(), null);
+  assert.ok(!text().some((l) => l.startsWith('▸')));
+  app.press('?'); app.press('q');
+  assert.equal(shown(), null);
+  app.press('?'); await app.press('a');
+  assert.doesNotMatch(text()[0], /agent/);
+
+  // while typing a filter, ? is text, in the filter's row
+  app.press('/'); app.press('?');
+  assert.equal(shown(), null);
+  assert.match(text()[1], /^\/\? +\[⏎\] keep/); // and the cursor
+  app.press('\x1b');
+  assert.equal(text()[1], BAND);
+
+  // on a page, the page's keys, and yours for its kind
+  app.press('j');
+  await app.press('l');
+  app.press('?');
+  assert.match(shown(), /keys · issue[^]*│ ← esc ⌫ +back +│[^]*│ a +agent +│/);
+  assert.doesNotMatch(shown(), /review/);
+  app.press('\x1b');
+  assert.equal(text()[4], 'ISSUE r#7  '); // esc closed the keys, and left the page as it was
+
+  const once = createApp({ once: true });
+  once.press('?');
+  assert.equal(once.popup(100, 40), null);
+  assert.doesNotMatch(vis(once.frame()[0]), /keys/);
+});
+
+test('s and e say in the header which shader and effects they picked', (t) => {
+  // in a process of its own, so the picks are saved apart from yours
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rex-dash-fx-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const script = `const { createApp } = require(${JSON.stringify(path.join(__dirname, '..', 'lib', 'app'))});
+    const { vis } = require(${JSON.stringify(path.join(__dirname, '..', 'lib', 'utils'))});
+    const app = createApp({ stdout: { columns: 200, rows: 30, write() {} } });
+    app.press('s'); console.log(vis(app.frame()[0]));
+    app.press('e'); console.log(vis(app.frame()[0]));`;
+  const out = execFileSync(process.execPath, ['-e', script], { env: { ...process.env, XDG_STATE_HOME: dir }, encoding: 'utf8' }).trim().split('\n');
+  assert.match(out[0], / {2}shader plasma$/);
+  assert.match(out[1], / {2}effects bloom$/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'rex-dash', 'settings.json'), 'utf8')), { shader: 'plasma', effect: 'bloom' });
 });
 
 test('once renders its four sections without interactive controls or settings effects', () => {
@@ -76,7 +155,7 @@ test('a keymap runs its command for the selected issue or PR in a background tab
   state.prs = { review: { issueCount: 0, nodes: [] }, mine: { issueCount: 1, nodes: [pr(3)] } };
   const header = () => vis(app.frame()[0]);
 
-  assert.match(vis(app.frame()[1]), /\[o\] browser {2}\[a\] agent {2}\[h\] here {2}\[\/\] filter/);
+  assert.match(keysOf(app), /│ a +agent {2}issue, PR +│\n│ h +here {2}issue +│/);
   assert.match(header(), /config: unknown field "keymap"/);
 
   await app.press('a'); // nothing selected
@@ -175,7 +254,10 @@ test('keys 1 to 6 hide and show sections for the session, starting from the conf
 
   assert.deepEqual(headings(), ['FLEET', 'REVIEW REQUESTS', 'MY PRS']);
   assert.match(vis(app.frame()[0]), /hidden \[2\] usage \[6\] issues/);
-  assert.match(vis(app.frame()[1]), /\[\/\] filter {2}\[1-6\] hide {2}\[s\] shader/);
+  assert.match(keysOf(app), /1-6 +hide or show: 1 fleet/);
+  app.press('?');
+  assert.ok(app.popup(100, 40).join('\n').includes(`1 fleet  ${dim('2 usage')}  3 review requests`)); // hidden ones dim
+  app.press('?');
   assert.deepEqual(app.selectable().map((x) => x.key), ['b1', 'r#3', 'r#4']);
 
   app.press('6'); app.press('1'); app.press('3');
@@ -244,7 +326,8 @@ test('l or → opens the selected PR\'s or issue\'s page, which scrolls, and ←
   const text = () => app.frame().map(vis);
   const header = () => text()[0];
 
-  assert.match(text()[1], /\[⏎\] open {2}\[l\/→\] details {2}\[t\] stack {2}\[o\] browser/);
+  assert.match(header(), /\[\?\] keys/);
+  assert.equal(text()[1], BAND); // no key bar
   await app.press('l'); // nothing selected
   assert.match(header(), /pick a PR, stack or issue with j\/k first/);
   app.press('j');
@@ -259,30 +342,35 @@ test('l or → opens the selected PR\'s or issue\'s page, which scrolls, and ←
   await app.press('l');
   assert.deepEqual(fetched, ['https://github.com/o/r/issues/7']);
   let rows = text();
-  assert.match(rows[1], /^\[←\] back {2}\[j\/k\] scroll 1-16 of \d+ {2}\[⏎\] worktree {2}\[o\] browser {2}\[a\] agent {2}\[r\] refresh {2}\[q\] quit$/);
-  const of = () => text()[1].match(/scroll (\d+)-(\d+) of (\d+)/).slice(1).map(Number);
-  assert.equal(rows.length, 3 + of()[2]); // the page goes on below the screen, from where it's scrolled to
-  assert.deepEqual(rows.slice(4, 6), ['ISSUE r#7  ', '  fix it']);
+  assert.match(rows[0], / {2}lines 1-17 of \d+ {2}\[\?\] keys/);
+  const of = () => header().match(/lines (\d+)-(\d+) of (\d+)/).slice(1).map(Number);
+  assert.equal(rows.length, 2 + of()[2]); // the page goes on below the screen, from where it's scrolled to
+  assert.deepEqual(rows.slice(3, 5), ['ISSUE r#7  ', '  fix it']);
+  const keys = keysOf(app);
+  assert.match(keys, /keys · issue/);
+  assert.match(keys, /│ ⏎ +worktree +│/);
+  assert.match(keys, /│ a +agent +│/); // keymaps for issues, without their kinds
+  assert.doesNotMatch(keys, /review|│ t /);
   assert.ok(!rows.some((l) => /FLEET|ISSUES/.test(l)));
   assert.deepEqual(app.page(), { key: 'r#7', url: 'https://github.com/o/r/issues/7' }); // o and keymaps act on it
 
   app.press('j'); app.press('j');
-  assert.equal(text()[3], '  fix it');
-  assert.deepEqual(of().slice(0, 2), [3, 18]);
+  assert.equal(text()[2], '  fix it');
+  assert.deepEqual(of().slice(0, 2), [3, 19]);
   app.press('k');
-  assert.equal(text()[3], 'ISSUE r#7  ');
+  assert.equal(text()[2], 'ISSUE r#7  ');
   app.press(' ');
-  assert.deepEqual(of().slice(0, 2), [17, 32]);
+  assert.deepEqual(of().slice(0, 2), [18, 34]);
   app.press('\x1b[F'); // end
   const total = of()[2];
-  assert.deepEqual(of(), [total - 15, total, total]);
+  assert.deepEqual(of(), [total - 16, total, total]);
   assert.deepEqual(text().slice(-4), ['  line 39', '', 'COMMENTS  0', '  none']);
   app.press('j'); // no further
-  assert.deepEqual(of(), [total - 15, total, total]);
+  assert.deepEqual(of(), [total - 16, total, total]);
   app.press('\x1b[H'); // home
-  assert.deepEqual(of().slice(0, 2), [1, 16]);
+  assert.deepEqual(of().slice(0, 2), [1, 17]);
   app.press('/'); app.press('1'); // the lists' keys don't act on a page
-  assert.match(text()[1], /^\[←\] back/);
+  assert.equal(text()[3], 'ISSUE r#7  ');
 
   for (const back of ['\x1b[D', '\x1b', '\x7f']) {
     app.press(back);
@@ -298,7 +386,7 @@ test('l or → opens the selected PR\'s or issue\'s page, which scrolls, and ←
   assert.ok(text().some((l) => l === '  line 0'));
   release();
   await again;
-  assert.match(text()[3], /^ {2}couldn't refresh: HTTP 502$/);
+  assert.match(text()[2], /^ {2}couldn't refresh: HTTP 502$/);
   assert.ok(text().some((l) => l === '  line 0'));
   release = null;
   fail = null;
@@ -311,7 +399,7 @@ test('l or → opens the selected PR\'s or issue\'s page, which scrolls, and ←
   app.press('\x1b'); app.press('/');
   for (const key of 'fix') app.press(key);
   await app.press('\x1b[C');
-  assert.match(text()[1], /^\[←\] back/);
+  assert.equal(text()[3], 'ISSUE r#7  ');
   app.press('\x1b');
   assert.match(text()[1], /^\/fix {2}\[esc\] clear/);
 });
@@ -321,7 +409,7 @@ test('Ctrl-D/U, Ctrl-F/B, Page Down/Up, Home and End scroll the lists as in Vim,
   const integrations = {
     details: async (url) => ({ __typename: 'Issue', viewer: 'me', number: 73, title: 'bug 3', url, state: 'OPEN', body, author: { login: 'ann' }, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z', assignees: { nodes: [] }, labels: { nodes: [] }, closedByPullRequestsReferences: { nodes: [] }, comments: { totalCount: 0, nodes: [] } }),
   };
-  const stdout = { columns: 100, rows: 20, write() {} }; // 16 rows for the lists: half a screen is 8, a screen 15
+  const stdout = { columns: 100, rows: 19, write() {} }; // 16 rows for the lists: half a screen is 8, a screen 15
   const config = { keymaps: new Map(), hide: new Set(['usage', 'review_requests']), errors: [] };
   const app = createApp({ stdout, config, integrations }), { state } = app;
   const agents = (from, n) => Array.from({ length: n }, (_, k) => pane(`b${from + k}`, `agent ${from + k}`, 'web'));
@@ -329,7 +417,7 @@ test('Ctrl-D/U, Ctrl-F/B, Page Down/Up, Home and End scroll the lists as in Vim,
   state.prs = { review: { issueCount: 0, nodes: [] }, mine: { issueCount: 10, nodes: Array.from({ length: 10 }, (_, k) => pr(20 + k)) } };
   state.issues = { issueCount: 5, nodes: Array.from({ length: 5 }, (_, k) => ({ ...issue(70 + k, `bug ${k}`), url: `https://github.com/o/r/issues/${70 + k}` })) };
 
-  const shown = () => app.frame().slice(3).map(vis); // the lists, from the top of the screen down
+  const shown = () => { const rows = app.frame(); return rows.slice(rows.indexOf(BAND) + 1).map(vis); }; // the lists, from the top of the screen down
   let total = shown().length;
   // FLEET: its heading, its session's label and 10 agents of 2 rows, at rows 3 to 22. MY PRS: its heading and
   // 10 PRs of a row, at 25 to 34. ISSUES: its heading and 5 issues of 2 rows, at 37 to 46.
@@ -387,12 +475,12 @@ test('Ctrl-D/U, Ctrl-F/B, Page Down/Up, Home and End scroll the lists as in Vim,
 
   // with a filter kept, they move among its matches
   press('/', ...'agent', '\r');
-  press(END);
-  assert.deepEqual(where().filter((_, i) => i !== 1), ['agent 9', 10]);
+  press(END); // the filter's row takes one of the lists' rows: 15, and half a screen is 7
+  assert.deepEqual(where().filter((_, i) => i !== 1), ['agent 9', 9]);
   press(D);
-  assert.deepEqual(where().filter((_, i) => i !== 1), ['agent 9', 10]);
-  press(U);
-  assert.deepEqual(where().filter((_, i) => i !== 1), ['agent 5', 10]);
+  assert.deepEqual(where().filter((_, i) => i !== 1), ['agent 9', 9]);
+  press(U); // the view scrolls 7 rows, and the selection 8, to the agent nearest
+  assert.deepEqual(where().filter((_, i) => i !== 1), ['agent 5', 8]);
   press('\x1b');
 
   // while typing a filter, they don't act, and Ctrl-U clears it
@@ -410,7 +498,7 @@ test('Ctrl-D/U, Ctrl-F/B, Page Down/Up, Home and End scroll the lists as in Vim,
   assert.deepEqual(where(), ['r#73', 31, 12]);
   await app.press('l');
   press(D);
-  assert.match(vis(app.frame()[1]), /scroll 9-24 of \d+/);
+  assert.match(vis(app.frame()[0]), /lines 9-24 of \d+/);
   press('\x1b[D');
   assert.deepEqual(where(), ['r#73', 31, 12]);
 
@@ -418,7 +506,7 @@ test('Ctrl-D/U, Ctrl-F/B, Page Down/Up, Home and End scroll the lists as in Vim,
   state.fleet[0].panes.unshift(...agents(10, 3));
   total += 6;
   assert.deepEqual(where(), ['r#73', 35, 14]);
-  stdout.rows = 10;
+  stdout.rows = 9;
   assert.deepEqual(where(), ['r#73', 45, 4]);
 });
 
@@ -472,8 +560,10 @@ test('l or t open a stack\'s page from the lists, where j/k select its PRs, l op
   const app = repoApp(integrations), text = () => app.frame().map(vis);
   for (const key of 'jjj') app.press(key); // r#1 and r#4 in your PRs, then the stack's row
   await app.press('l');
-  assert.match(text()[1], /^\[←\] back {2}\[j\/k\] select {2}\[l\/→\] details {2}\[⏎\/o\] browser {2}\[r\] refresh {2}\[q\] quit$/);
-  assert.equal(text()[4], 'STACK r#9  ');
+  const keys = keysOf(app);
+  assert.match(keys, /keys · stack/);
+  for (const k of [/j\/k ↑\/↓ +select a PR/, /l → +the PR's page/, /⏎ o +open in the browser/]) assert.match(keys, k);
+  assert.equal(text()[3], 'STACK r#9  ');
   assert.ok(text().some((l) => /^▸ {2}1 · review {3}#1 pr 1/.test(l)));
   assert.deepEqual(app.page(), { key: 'r#9', url: 'https://github.com/o/r/stack/9' });
   app.press('j');
@@ -483,12 +573,12 @@ test('l or t open a stack\'s page from the lists, where j/k select its PRs, l op
   app.press('k');
   await app.press('l');
   assert.deepEqual(fetched, ['https://github.com/o/r/pull/2']);
-  assert.equal(text()[4], 'PR r#2  ');
-  assert.match(text()[1], /\[o\] browser {2}\[t\] stack {2}\[r\] refresh/);
+  assert.equal(text()[3], 'PR r#2  ');
+  assert.match(keysOf(app), /│ t +stack page +│/); // a PR in a stack
   assert.ok(text().includes('  ▸  2 ● approved #2 pr 2')); // its stack, from the repo's
   await app.press('t'); // the stack again, in front of the PR's page
   assert.ok(text().some((l) => /^▸ {2}2 · approved #2/.test(l)));
-  for (const page of ['PR r#2  ', 'STACK r#9  ']) { app.press('\x1b[D'); assert.equal(text()[4], page); }
+  for (const page of ['PR r#2  ', 'STACK r#9  ']) { app.press('\x1b[D'); assert.equal(text()[3], page); }
   app.press('\x1b');
   assert.ok(text().some((l) => l.startsWith('▸ ⧉ r#9')), 'the stack stays selected');
 
@@ -515,7 +605,7 @@ test('outside a repo there\'s no stacks section, but t still opens a stacked PR\
   app.press('j');
   await app.press('t');
   assert.deepEqual(asked, ['S9']);
-  assert.equal(text()[4], 'STACK r#9  ');
+  assert.equal(text()[3], 'STACK r#9  ');
   assert.ok(text().some((l) => /^▸ {2}1 · review/.test(l)));
 });
 
@@ -546,13 +636,13 @@ test('the repo\'s stacks are fetched after the PRs, from their PRs, and not at a
 });
 
 test('Ctrl-D/U, Home and End scroll through stacks and their PRs, apart from the same PRs in your PRs', () => {
-  const stdout = { columns: 160, rows: 10, write() {} }; // 6 rows for the lists
+  const stdout = { columns: 160, rows: 9, write() {} }; // 6 rows for the lists
   const config = { keymaps: new Map(), hide: new Set(['fleet', 'usage', 'review_requests', 'issues']), errors: [] };
   const app = createApp({ stdout, config, repo: { roots: ['/r'], gh: 'o/r', name: 'o/r' } });
   Object.assign(app.state, { prs: { review: { issueCount: 0, nodes: [] }, mine: { issueCount: 2, nodes: [stacked(1, 1), pr(4)] } }, stacks: stackState() });
   // MY PRS: a blank row, its heading and 2 PRs, at rows 0 to 3. STACKS: a blank row, its heading, the stack and
   // its 3 PRs, at 4 to 9.
-  const shown = () => app.frame().slice(3).map(vis);
+  const shown = () => app.frame().slice(2).map(vis); // under the header and the band
   const marked = () => shown().filter((l) => l.startsWith('▸ '));
   app.press('\x1b[F'); // End: the stack's last PR, at the bottom
   assert.equal(marked().length, 1);
