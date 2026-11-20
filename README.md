@@ -255,9 +255,24 @@ npm ci                                  # install pinned build-only dependencies
 ./scripts/build-binary.sh v0.0.0 dist   # build for this machine's OS and architecture
 ./scripts/test-binary.sh dist/rex-dash  # smoke-test without Node on PATH or lib/
 ./scripts/test-package.sh              # build archive and validate formula
+./scripts/try-pr.sh 13 --run           # try PR 13's binary before it merges
 ```
 
 CI builds and tests all four native targets. It also installs and tests the generated formula on macOS with `./scripts/test-package.sh --brew`; this refuses to replace an existing `rex-dash` installation. The local formula test duplicates the host archive under other target names to test formula generation, but runs only the host binary.
+
+### Trying a PR
+
+CI keeps each platform's binary for 14 days once it passes its tests. To try a PR before it merges, with `gh` logged in:
+
+```sh
+./scripts/try-pr.sh 13 --run              # PR 13's binary for this machine, started here
+./scripts/try-pr.sh --run -- --once       # the PR for this checkout's branch, with rex-dash's arguments
+./scripts/try-pr.sh 13                    # print its path, and a rex split command to open it beside your pane
+```
+
+It downloads the binary CI built from the PR's last commit, checks it against its SHA-256 file and runs its self-check. It keeps the binary in `~/.cache/rex-dash-builds/pr-13/` (under `$XDG_CACHE_HOME` if set), and downloads it again only when the PR gets a new commit. CI builds a PR merged into main as main was then, so the binary has main's changes too. Delete `~/.cache/rex-dash-builds` to remove the binaries.
+
+The PR's binary shares your config, cache and settings with your installed rex-dash, as an upgrade would. A PR that changes what's cached without raising `CACHE_VERSION` can leave data your installed rex-dash misreads; deleting `~/.cache/rex-dash` fixes that. With `--isolated`, the PR's binary keeps its cache and settings in its PR's folder, but still reads your config. It starts with no data, and `wt` and `gh`, which it runs, use that cache folder too. The script suggests `--isolated` when a PR changes `lib/storage.js` or `lib/usage.js`.
 
 ## Releasing
 
