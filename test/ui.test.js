@@ -197,3 +197,113 @@ test('an issue\'s page shows its people, labels, linked PRs, text and comments; 
   assert.equal(vis(renderDetail({ kind: 'issue', key: 'r#7', item, got: { data, err: 'offline' } }, 80)[0]), "  couldn't refresh: offline");
   assert.deepEqual(checks(null), []);
 });
+
+const { joinStacks, summary } = require('../lib/ui/stacks');
+const stackPR = (number, more = {}) => ({ number, title: `pr ${number}`, url: `https://github.com/o/r/pull/${number}`, state: 'OPEN', isDraft: false, reviewDecision: null, updatedAt: '2026-01-02T00:00:00Z', repository: { name: 'r' }, author: { login: 'ann' }, commits: { nodes: [] }, status: 'review', ...more });
+const member = (number, state = 'OPEN', isDraft = false) => ({ number, state, isDraft, head: `b${number}` });
+const stacksData = (more = {}) => ({
+  pages: [{ stacks: [{ id: 'S9', number: 9, repo: 'r', base: 'main', url: 'https://github.com/o/r/stack/9', members: [member(1), member(2), member(3), member(4), member(5, 'MERGED')] }] }],
+  prs: { 2: stackPR(2, { status: 'changes' }), 3: stackPR(3, { status: 'approved', updatedAt: '2026-01-05T00:00:00Z' }), 5: stackPR(5) },
+  ...more,
+});
+test('stacks join your PRs, else what was fetched with them; the stack\'s list says which are merged; the rest show as their branch', () => {
+  const listed = { mine: { nodes: [stackPR(1, { status: 'approved', title: 'yours' }), stackPR(5, { title: 'listed, but merged since' })] }, review: { nodes: [] } };
+  const [s] = joinStacks(stacksData(), listed);
+  assert.equal(s.key, 'r#9');
+  assert.deepEqual(s.members.map((m) => [m.position, m.number, m.status, m.known]), [[1, 1, 'approved', true], [2, 2, 'changes', true], [3, 3, 'approved', true], [4, 4, 'review', false], [5, 5, 'merged', true]]);
+  assert.equal(s.members[0].pr.title, 'yours');
+  assert.deepEqual(s.members[3].pr, { number: 4, title: 'b4', url: 'https://github.com/o/r/pull/4', repository: { name: 'r' }, isDraft: false, commits: { nodes: [] } });
+  assert.equal(s.updatedAt, '2026-01-05T00:00:00Z');
+  assert.deepEqual(joinStacks(null, listed), []);
+  // a PR cached before PRs had a status: its review decision says
+  assert.equal(joinStacks(stacksData({ prs: { 1: { ...stackPR(1), status: undefined, reviewDecision: 'APPROVED' } } }))[0].members[0].status, 'approved');
+});
+
+test('a stack\'s summary counts out of the whole stack, has a glyph for each PR in order, the next to merge, and whether it\'s stale', () => {
+  const [s] = joinStacks(stacksData(), { mine: { nodes: [stackPR(1, { status: 'approved' })] } });
+  const { parts, strip, next, stale } = summary(s);
+  assert.deepEqual(parts.map(vis), ['2/5 approved', '1 needs changes', '1 needs review', '1 merged']);
+  assert.equal(strip, [green('●'), red('●'), green('●'), '\x1b[33m○\x1b[0m', '\x1b[35m✓\x1b[0m'].join(''));
+  assert.equal(next.number, 1);
+  assert.equal(stale, false);
+  const drafts = joinStacks({ pages: [{ stacks: [{ number: 3, repo: 'r', members: [member(1, 'OPEN', true), member(2, 'MERGED'), member(3, 'OPEN', true)] }] }] })[0];
+  assert.deepEqual(summary(drafts).parts.map(vis), ['0/3 approved', '2 drafts', '1 merged']);
+  assert.equal(summary(drafts).stale, true);
+  assert.equal(vis(summary({ members: [{ status: 'approved', state: 'OPEN' }] }).parts[0]), '1/1 approved');
+});
+
+test('a stacked PR\'s row shows where it is, its status shows as reviews say, and the filter finds a stack\'s PRs by its number', () => {
+  const filter = createFilter();
+  const sections = createSections({ getRepo: () => null, getSel: () => null, filter });
+  const p = stackPR(6, { status: 'approved', stack: { id: 'S9', number: 9, size: 5 }, stackEntry: { position: 2 } });
+  assert.match(vis(sections.prLine(p)), /^ {2}· approved r#6 ⧉2\/5 pr 6 /);
+  assert.match(vis(sections.prLine({ ...pr(7), isDraft: true })), /^ {2}· draft {4}r#7 pr 7 /); // cached without a status
+  filter.setQuery('stack r#9');
+  assert.deepEqual(sections.shownPRs({ nodes: [p, stackPR(7)] }).map((x) => x.item.number), [6]);
+});
+
+test('the stacks section shows each stack, then its PRs in order, dim when stale, and a stack\'s PR selects apart from its row in your PRs', () => {
+  let selected = null;
+  const filter = createFilter();
+  const sections = createSections({ getRepo: () => ({}), getSel: () => selected, filter });
+  const stale = { id: 'S7', number: 7, repo: 'r', base: 'main', url: 'https://github.com/o/r/stack/7', members: [member(10, 'OPEN', true)] };
+  const data = stacksData({ pages: [{ stacks: [stacksData().pages[0].stacks[0], stale] }] });
+  const list = joinStacks(data, { mine: { nodes: [stackPR(1, { status: 'approved', replies: 2 })] } });
+  const rows = sections.renderStacks(list).map(vis);
+  assert.match(rows[0], /^\nSTACKS {2}2 open in the repo$/);
+  assert.match(rows[1], /^ {2}⧉ r#9 → main {2}●●●○✓ {2}2\/5 approved · 1 needs changes · 1 needs review · 1 merged · next #1 \S+$/);
+  assert.deepEqual(rows.slice(2, 7).map((l) => l.replace(/ \d+[smhd]$/, '')), [
+    '     1 · approved r#1 ↩2 pr 1', '     2 · changes  r#2 pr 2', '     3 · approved r#3 pr 3', '     4 · review   r#4 b4', '     5 · merged   r#5 pr 5',
+  ]);
+  const staleRow = sections.renderStacks(list)[7];
+  assert.ok(staleRow.startsWith('  \x1b[2m⧉ r#7') && vis(staleRow).includes('1 draft'));
+  assert.match(vis(sections.renderStacks(list, 'HTTP 502')[0]), /2 open in the repo · couldn't fetch their PRs: HTTP 502/);
+
+  // a stack's row and its PRs' select by their own ids
+  selected = 'r#9';
+  assert.ok(sections.renderStacks(list)[1].startsWith(MARK));
+  selected = 'r#9/r#2';
+  assert.deepEqual(sections.renderStacks(list).map((l, i) => [i, l.startsWith(MARK)]).filter(([, m]) => m).map(([i]) => i), [3]);
+  selected = 'r#2';
+  assert.ok(!sections.renderStacks(list).some((l) => l.startsWith(MARK)));
+
+  // the filter keeps a stack whole, by any of its rows, or by "stack" and its number
+  filter.setQuery('b4');
+  assert.deepEqual(sections.shownStacks(list).map((x) => x.item.key), ['r#9']);
+  filter.setQuery('stack r#7');
+  assert.deepEqual(sections.shownStacks(list).map((x) => x.item.key), ['r#7']);
+
+  // long stacks show their first 20 PRs
+  filter.setQuery('');
+  const long = joinStacks({ pages: [{ stacks: [{ ...stale, members: Array.from({ length: 23 }, (_, i) => member(100 + i)) }] }] });
+  const longRows = sections.renderStacks(long).map(vis);
+  assert.equal(longRows.length, 1 + 1 + 20 + 1);
+  assert.equal(longRows.at(-1), '      … 3 more');
+});
+
+test('a stacked PR\'s page shows its stack, marked where it is, or where it is when the dashboard hasn\'t the stack; a stack\'s page shows its PRs', () => {
+  const [s] = joinStacks(stacksData(), { mine: { nodes: [stackPR(1, { status: 'approved' })] } });
+  const data = prDetails({ number: 2, repository: { name: 'r' }, stack: { id: 'S9', number: 9, size: 5 }, stackEntry: { position: 2 } });
+  const text = renderDetail({ kind: 'pr', key: 'r#2', item: {}, got: { data }, stack: s }, 120).map(vis);
+  const at = text.findIndex((l) => l.startsWith('STACK r#9'));
+  assert.ok(at > text.findIndex((l) => l.includes('https://github.com/o/r/pull/3')) && at < text.findIndex((l) => l.startsWith('UNRESOLVED')));
+  assert.equal(text[at], 'STACK r#9  2 of 5 → main  ●●●○✓  2/5 approved · 1 needs changes · 1 needs review · 1 merged');
+  assert.deepEqual(text.slice(at + 1, at + 7), [
+    '     1 ● approved #1 pr 1', '  ▸  2 ● changes  #2 pr 2', '     3 ● approved #3 pr 3', '     4 ○ review   #4 b4', '     5 ✓ merged   #5 pr 5',
+    '  https://github.com/o/r/stack/9 · [t] opens it',
+  ]);
+  const without = renderDetail({ kind: 'pr', key: 'r#2', item: {}, got: { data } }, 120).map(vis);
+  assert.ok(without.includes('  ⧉ 2 of 5 in stack r#9  [t] opens it'));
+  assert.ok(!renderDetail({ kind: 'pr', key: 'r#3', item: {}, got: { data: prDetails() } }, 120).map(vis).some((l) => l.includes('⧉')));
+
+  const page = renderDetail({ kind: 'stack', key: 'r#9', item: {}, stack: s, sel: 1 }, 120).map(vis);
+  assert.deepEqual(page.slice(0, 6), ['', 'STACK r#9  ', '  5 PRs → main · ●●●○✓ · 2/5 approved · 1 needs changes · 1 needs review · 1 merged',
+    '  next to merge: #1, approved', '  https://github.com/o/r/stack/9', '']);
+  assert.equal(page[6], 'PULL REQUESTS  5');
+  assert.deepEqual(page.slice(7, 11).map((l) => l.replace(/\d+d ago/, 'ago')), [
+    '   1 · approved #1 pr 1', '        b1 → main · by ann · updated ago', '▸  2 · changes  #2 pr 2', '        b2 → b1 · by ann · updated ago',
+  ]);
+  assert.ok(renderDetail({ kind: 'stack', key: 'r#9', item: {}, stack: s, sel: 1 }, 120)[9].startsWith(MARK));
+  assert.deepEqual(renderDetail({ kind: 'stack', key: 'r#9', item: {} }, 80).map(vis), ['', 'STACK r#9  ', '  asking GitHub…']);
+  assert.deepEqual(renderDetail({ kind: 'stack', key: 'r#9', item: {}, got: { err: 'offline' } }, 80).map(vis), ["  couldn't fetch it: offline", '', 'STACK r#9  ']);
+});

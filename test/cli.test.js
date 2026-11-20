@@ -46,7 +46,9 @@ esac
   const output = execFileSync(link, ['--once'], { cwd: dir, env, encoding: 'utf8' });
   for (const word of ['FLEET', 'web', 'coding', 'USAGE', '4', 'REVIEW REQUESTS', 'MY PRS', 'ISSUES']) assert.ok(output.includes(word), word);
   assert.ok(!output.includes('[j/k]'));
+  assert.ok(!output.includes('STACKS')); // stacks show only in repo mode
   const calls = fs.readFileSync(log, 'utf8');
+  assert.ok(!calls.includes('stacks'));
   for (const cmd of ['ls --json', 'block ls -s s --json', 'block call -s s -b b process', 'block call -s s -b b program_status', 'block call -s s -b b title']) assert.ok(calls.includes(cmd), cmd);
   const cache = path.join(dir, 'cache', 'rex-dash', 'all');
   assert.equal(JSON.parse(fs.readFileSync(path.join(cache, 'state.json'))).version, 1);
@@ -84,6 +86,11 @@ test('repo-mode --once scopes GitHub and cache to the detected worktree', (t) =>
   api)
     echo "$*" >> "$QUERY_LOG"
     case "$*" in
+      *repos/owner/repo/stacks*) printf 'HTTP/2.0 200 OK\nEtag: "e1"\r\n\r\n%s' '${JSON.stringify([{
+        number: 9, node_id: 'S9', url: 'https://api.github.com/repos/owner/repo/stacks/9', base: { ref: 'main' }, open: true,
+        pull_requests: [{ number: 7, state: 'open', draft: false, merged_at: null, head: { ref: 'a' } }, { number: 8, state: 'open', draft: false, merged_at: null, head: { ref: 'b' } }],
+      }])}' ;;
+      *"pullRequest(number"*) echo '{"data":{"repository":{"p7":{"number":7,"title":"bottom of the stack","state":"OPEN","isDraft":false,"reviewDecision":"APPROVED","repository":{"name":"repo"},"commits":{"nodes":[]}},"p8":{"number":8,"title":"top of the stack","state":"OPEN","isDraft":false,"reviewDecision":null,"repository":{"name":"repo"},"commits":{"nodes":[]}}}}}' ;;
       *is:pr*) echo '{"data":{"mine":{"issueCount":0,"nodes":[]},"review":{"issueCount":0,"nodes":[]}}}' ;;
       *) echo '{"data":{"issues":{"issueCount":0,"nodes":[]}}}' ;;
     esac ;;
@@ -96,6 +103,13 @@ esac
     : execFileSync(process.execPath, [CLI, '--once'], { cwd: repo, env, encoding: 'utf8' });
   assert.ok(output.includes('owner/repo'));
   assert.equal(fs.readFileSync(log, 'utf8').match(/repo:owner\/repo/g).length, 3); // both PR searches and the issues search
+  // the repo's stacks, with the PRs that aren't yours fetched by number
+  assert.match(fs.readFileSync(log, 'utf8'), /^api -i repos\/owner\/repo\/stacks\?per_page=100&page=1$/m);
+  const text = output.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+  assert.match(text, /STACKS {2}1 open in the repo/);
+  assert.match(text, /⧉ repo#9 → main {2}●○ {2}1\/2 approved · 1 needs review · next #7/);
+  assert.match(text, / 1 · approved repo#7 bottom of the stack/);
+  assert.ok(text.indexOf('STACKS') < text.indexOf('ISSUES'));
   const caches = fs.readdirSync(path.join(dir, 'cache', 'rex-dash'));
   assert.equal(caches.length, 1);
   assert.match(caches[0], /^repo-[0-9a-f]{8}$/);

@@ -5,7 +5,7 @@ const { EventEmitter } = require('node:events');
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const { fleet, focusPane, withEnv, openTab, paneName } = require('../lib/integrations/rex');
-const { prs, issues, replies, details, detailQuery } = require('../lib/integrations/github');
+const { prs, issues, replies, details, detailQuery, prStatus, support, STACK_REFS, http, stackList, stackMembers, stacks, stack } = require('../lib/integrations/github');
 const { runWorktree, prepareWorktree } = require('../lib/integrations/wt');
 
 test('Rex adapter uses the existing JSON CLI commands, ranks status, and filters by worktree', async () => {
@@ -131,9 +131,9 @@ test('your PRs keep only their count of replies; review requests fetch none', as
   assert.match(query, /viewer \{ login \}/);
   assert.match(query, /mine: search\([^)]*\) \{ issueCount nodes \{ \.\.\.pr \.\.\.replies \} \}/);
   assert.match(query, /review: search\([^)]*\) \{ issueCount nodes \{ \.\.\.pr \} \}/);
-  assert.deepEqual(Object.keys(d.mine.nodes[0]), ['number', 'title', 'commits', 'replies']);
+  assert.deepEqual(Object.keys(d.mine.nodes[0]), ['number', 'title', 'commits', 'status', 'replies']);
   assert.equal(d.mine.nodes[0].replies, 2);
-  assert.deepEqual(d.review.nodes[0], { number: 2, title: 'u', commits: { nodes: [] } });
+  assert.deepEqual(d.review.nodes[0], { number: 2, title: 'u', commits: { nodes: [] }, status: 'review' });
 });
 
 test('the pane\'s Rex status is blocked, with a base64 message, while replies wait on you', () => {
@@ -261,4 +261,142 @@ test('openTab adds a background window to the worktree session, or creates the s
     ['window', 'new', '-s', 'here', 'agent #7', '-c', '/r/7-fix', '--keep-open', '--focus=false', '--json', '--', ...argv],
     ['do', 'session.select', 'session_id=here', 'window_id=w2'],
   ]);
+});
+
+test('a PR\'s status: merged, closed, draft, then its review decision, or its latest reviews without bots\' when it has none', () => {
+  const reviews = (...states) => ({ nodes: states.map(([state, bot]) => ({ state, author: { __typename: bot ? 'Bot' : 'User' } })) });
+  assert.equal(prStatus({ state: 'MERGED', isDraft: true }), 'merged');
+  assert.equal(prStatus({ state: 'CLOSED' }), 'closed');
+  assert.equal(prStatus({ state: 'OPEN', isDraft: true, reviewDecision: 'APPROVED' }), 'draft');
+  assert.equal(prStatus({ reviewDecision: 'CHANGES_REQUESTED' }), 'changes');
+  assert.equal(prStatus({ reviewDecision: 'APPROVED' }), 'approved');
+  assert.equal(prStatus({ reviewDecision: 'REVIEW_REQUIRED', latestOpinionatedReviews: reviews(['APPROVED']) }), 'review'); // needs more approvals
+  // a stacked PR's base isn't protected, so it has no review decision: its reviews decide
+  assert.equal(prStatus({ reviewDecision: null, latestOpinionatedReviews: reviews(['APPROVED'], ['APPROVED', true]) }), 'approved');
+  assert.equal(prStatus({ reviewDecision: null, latestOpinionatedReviews: reviews(['APPROVED'], ['CHANGES_REQUESTED']) }), 'changes');
+  assert.equal(prStatus({ reviewDecision: null, latestOpinionatedReviews: reviews(['APPROVED', true]) }), 'review'); // a bot's approval
+  assert.equal(prStatus({}), 'review');
+});
+
+test('PRs and their pages ask where they are in a stack, and ask again without it where GitHub has no stacks', async () => {
+  const queries = [];
+  const run = async (cmd, args) => {
+    queries.push(args[3]);
+    if (queries.length === 1) throw new Error("gh: Field 'stack' doesn't exist on type 'PullRequest'");
+    return { data: { mine: { nodes: [] }, review: { nodes: [{ number: 2, reviewDecision: null, latestOpinionatedReviews: { nodes: [{ state: 'APPROVED', author: {} }] } }] } } };
+  };
+  assert.ok(detailQuery.includes(STACK_REFS));
+  try {
+    const d = await prs(null, run);
+    assert.equal(queries.length, 2);
+    assert.ok(queries[0].includes(STACK_REFS) && queries[0].includes('latestOpinionatedReviews(first: 10)'));
+    assert.ok(!queries[1].includes('stack') && queries[1].includes('latestOpinionatedReviews'));
+    assert.deepEqual(d.review.nodes[0], { number: 2, reviewDecision: null, status: 'approved' }); // the reviews go once they've decided
+    assert.equal(support.stacks, false);
+    await details('u', async (cmd, args) => { queries.push(args[3]); return { data: { resource: { __typename: 'PullRequest' } } }; });
+    assert.ok(!queries[2].includes('stack')); // and from then on
+    await assert.rejects(() => prs(null, async () => { throw new Error("Field 'stack' doesn't exist"); }), /doesn't exist/); // once
+  } finally { support.stacks = true; }
+  await assert.rejects(() => prs(null, async () => { throw new Error('HTTP 502'); }), /502/);
+  assert.equal(support.stacks, true);
+});
+
+// gh api -i's output: a status line ending in \n, headers ending in \r\n, a blank line, then the body.
+const response = (status, headers = {}, body = '') => `HTTP/2.0 ${status}\n${Object.entries(headers).map(([k, v]) => `${k}: ${v}\r\n`).join('')}\r\n${body}`;
+const restStack = (number, open, prs) => ({
+  number, node_id: `S${number}`, url: `https://api.github.com/repos/o/r/stacks/${number}`, base: { ref: 'main' }, open,
+  pull_requests: prs.map(([n, state = 'open', merged = false, draft = false]) => ({ number: n, state, draft, merged_at: merged ? '2026-01-01T00:00:00Z' : null, head: { ref: `b${n}` } })),
+});
+test('a gh api -i response gives its status, headers and body', () => {
+  assert.deepEqual(http(response('200 OK', { ETag: 'W/"x"', Link: '<u>; rel="next"' }, '[]')), { status: 200, headers: { etag: 'W/"x"', link: '<u>; rel="next"' }, body: '[]' });
+  assert.deepEqual(http(response('304 Not Modified', { ETag: 'W/"x"' })), { status: 304, headers: { etag: 'W/"x"' }, body: '' });
+  assert.equal(http('').status, 0);
+});
+
+test('a repo\'s open stacks come page by page, each with its ETag, and a page that hasn\'t changed comes from the cache', async () => {
+  const calls = [];
+  let pages = {
+    1: response('200 OK', { ETag: '"e1"', Link: '<https://api.github.com/repositories/1/stacks?page=2>; rel="next"' }, JSON.stringify([restStack(9, true, [[7], [8, 'closed', true]]), restStack(5, false, [[4, 'closed', true]])])),
+    2: response('200 OK', { ETag: '"e2"' }, JSON.stringify([restStack(3, true, [[1, 'open', false, true], [2, 'closed']])])),
+  };
+  const run = async (cmd, args) => {
+    calls.push(args);
+    const page = args.at(-1).match(/page=(\d+)$/)[1];
+    return { code: pages[page].startsWith('HTTP/2.0 200') ? 0 : 1, out: pages[page], err: '' };
+  };
+  const first = await stackList('o/r', null, run);
+  assert.deepEqual(calls, [['api', '-i', 'repos/o/r/stacks?per_page=100&page=1'], ['api', '-i', 'repos/o/r/stacks?per_page=100&page=2']]);
+  assert.deepEqual(first.map((p) => p.stacks.map((s) => s.number)), [[9], [3]]); // closed stack 5 left out
+  assert.deepEqual(first[0].stacks[0], {
+    id: 'S9', number: 9, repo: 'r', base: 'main', url: 'https://github.com/o/r/stack/9',
+    members: [{ number: 7, state: 'OPEN', isDraft: false, head: 'b7' }, { number: 8, state: 'MERGED', isDraft: false, head: 'b8' }],
+  });
+  assert.deepEqual(first[1].stacks[0].members.map((m) => [m.state, m.isDraft]), [['OPEN', true], ['CLOSED', false]]);
+
+  // the second time, each page goes with its ETag; an unchanged one is a 304, which gh exits 1 on
+  calls.length = 0;
+  pages = { 1: pages[1], 2: response('304 Not Modified', { ETag: '"e2"' }) };
+  pages[1] = pages[1].replace('"e1"', '"e1b"');
+  const second = await stackList('o/r', { pages: first }, run);
+  assert.deepEqual(calls.map((a) => a.slice(2, 4)), [['-H', 'If-None-Match: "e1"'], ['-H', 'If-None-Match: "e2"']]);
+  assert.equal(second[0].etag, '"e1b"');
+  assert.equal(second[1], first[1]);
+
+  // a server without stacks has none; another failure says why
+  assert.deepEqual(await stackList('o/r', null, async () => ({ code: 1, out: response('404 Not Found'), err: 'gh: Not Found (HTTP 404)\n' })), []);
+  await assert.rejects(() => stackList('o/r', null, async () => ({ code: 1, out: response('500 Server Error'), err: 'gh: Server Error (HTTP 500)\n' })), /^Error: gh: Server Error \(HTTP 500\)$/);
+});
+
+test('a stack\'s PRs come from your PRs and review requests, or a cache of merged and closed ones, and only the rest are fetched', async () => {
+  const pr = (number, state = 'OPEN') => ({ number, state, title: `pr ${number}`, repository: { name: 'r' }, reviewDecision: 'APPROVED' });
+  const list = [restStack(9, true, [[1], [2], [3, 'closed', true], [4, 'closed'], [5]])];
+  const raw = async () => ({ code: 0, out: response('200 OK', { ETag: '"e"' }, JSON.stringify(list)), err: '' });
+  let asked = [];
+  const runJson = async (cmd, args) => {
+    asked.push(args);
+    const ns = [...args[3].matchAll(/pullRequest\(number: (\d+)\)/g)].map((m) => +m[1]);
+    return { data: { repository: Object.fromEntries(ns.map((n) => [`p${n}`, { ...pr(n, n === 3 ? 'MERGED' : n === 4 ? 'CLOSED' : 'OPEN'), latestOpinionatedReviews: { nodes: [] } }])) } };
+  };
+  const listed = { mine: { nodes: [pr(1)] }, review: { nodes: [{ ...pr(2), repository: { name: 'other' } }] } };
+  const repo = { gh: 'o/r' };
+  const first = await stacks(repo, { prs: listed }, raw, runJson);
+  assert.equal(asked.length, 1);
+  assert.deepEqual(asked[0].slice(4), ['-f', 'owner=o', '-f', 'name=r']);
+  assert.deepEqual([...asked[0][3].matchAll(/p(\d+): pullRequest/g)].map((m) => +m[1]), [2, 3, 4, 5]); // 1 is yours; 2 is another repo's
+  assert.deepEqual(Object.keys(first.prs), ['2', '3', '4', '5']);
+  assert.equal(first.prs[5].status, 'approved');
+  assert.ok(!('latestOpinionatedReviews' in first.prs[5]));
+
+  // the merged and closed ones are kept, the open ones fetched again
+  asked = [];
+  const second = await stacks(repo, { prs: listed, cached: first }, raw, runJson);
+  assert.deepEqual([...asked[0][3].matchAll(/p(\d+): pullRequest/g)].map((m) => +m[1]), [2, 5]);
+  assert.equal(second.prs[3], first.prs[3]);
+
+  // a failed fetch keeps the PRs fetched before, and says why; nothing to fetch, no fetch
+  const failed = await stacks(repo, { prs: listed, cached: first }, raw, async () => { throw new Error('HTTP 502\nmore'); });
+  assert.deepEqual(failed.prs, first.prs);
+  assert.equal(failed.err, 'HTTP 502');
+  asked = [];
+  await stacks(repo, { prs: { mine: { nodes: [1, 2, 5].map((n) => pr(n)) } }, cached: first }, raw, runJson);
+  assert.deepEqual(asked, []);
+  await assert.rejects(() => stacks({ gh: null }, {}, raw, runJson), /no GitHub remote/);
+  await assert.rejects(() => stackMembers('o/r', [1, '2) { x }'], runJson), /positive integers/);
+});
+
+test('one stack is fetched by its id, passed as a variable, in the shape the repo\'s stacks have', async () => {
+  let args;
+  const entry = (position, number, state = 'OPEN') => ({ position, pullRequest: { number, state, isDraft: false, title: `pr ${number}`, url: `https://ghe.x/o/r/pull/${number}`, repository: { name: 'r' }, headRefName: `b${number}`, reviewDecision: null, latestOpinionatedReviews: { nodes: [] } } });
+  const d = await stack('S9") { x }', async (cmd, a) => {
+    args = a;
+    return { data: { node: { id: 'S9', number: 9, baseRefName: 'main', entries: { nodes: [entry(2, 8, 'MERGED'), entry(1, 7)] } } } };
+  });
+  assert.deepEqual(args.slice(4), ['-f', 'id=S9") { x }']);
+  assert.match(args[3], /^query=query\(\$id: ID!\)/);
+  assert.deepEqual(d.pages[0].stacks[0], {
+    id: 'S9', number: 9, repo: 'r', base: 'main', url: 'https://ghe.x/o/r/stack/9',
+    members: [{ number: 7, state: 'OPEN', isDraft: false, head: 'b7' }, { number: 8, state: 'MERGED', isDraft: false, head: 'b8' }],
+  });
+  assert.deepEqual(Object.values(d.prs).map((p) => [p.number, p.status, 'headRefName' in p]), [[7, 'review', false], [8, 'merged', false]]);
+  await assert.rejects(() => stack('S1', async () => ({ data: { node: null } })), /no such stack/);
 });

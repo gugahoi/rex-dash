@@ -12,15 +12,18 @@ It shows:
 - **Usage:** Claude Code tokens by model over the last 30 days, with a daily sparkline, read from `~/.claude/projects`.
 - **Review requests:** up to 10 open PRs waiting on your review, across GitHub, with CI and review state.
 - **My PRs:** up to 10 of your open PRs, with CI, review and draft state. A yellow `↩2` means two replies are waiting on you. Those PRs come first, and the heading counts them. See [Replies](#replies).
+- **Stacks**, in [repo mode](#repo-mode) only: the repo's open [stacks of PRs](https://gh.io/stacks), newest first. See [Stacks](#stacks).
 - **Issues:** open issues assigned to you, most recently updated first. Each shows its labels in their GitHub colours, then its author, assignees, comment count, milestone and linked PRs. A `⇄` marks an issue with a linked PR, one that would close it, coloured by the most active one: green open, yellow draft, magenta merged, dim closed.
 
-Keys: `j`/`k` or the arrow keys select an agent, a PR or an issue; Ctrl-D and Ctrl-U move the selection half a screen, Ctrl-F and Ctrl-B (or Page Down and Page Up) a screen, and Home and End go to the first or the last. As in Vim, those keys scroll the lists, and `j`/`k` scroll them only when the selection would leave the screen; `l` or → opens the selected PR's or issue's page in the dashboard, with a PR's unresolved review threads and an issue's text (see [PR and issue pages](#pr-and-issue-pages)); `/` filters the lists; `1` to `5` hide and show the sections (see [Hiding sections](#hiding-sections)); `s` cycles the shader, `e` cycles the effects, `r` refreshes, `q` quits. Enter on an agent shows its pane in the Rex app. Enter on a PR or an issue opens a worktree for it. `o` on a PR or an issue opens its GitHub page in your browser, with `open` on macOS or `xdg-open` elsewhere. That's on the machine rex-dash runs on, so on a remote Rex server it opens there. Keys you add yourself run your own commands on a PR or an issue, such as starting an agent on it: see [Custom keys](#custom-keys).
+A PR's tag is its review status: `approved`, `changes`, `review` or `draft`. A PR whose base branch isn't protected, as in a stack, has no review decision on GitHub, so its latest reviews decide, without bots'. A PR in a stack shows where, such as a cyan `⧉2/5`: second from the base of a stack of 5.
+
+Keys: `j`/`k` or the arrow keys select an agent, a PR, a stack or an issue; Ctrl-D and Ctrl-U move the selection half a screen, Ctrl-F and Ctrl-B (or Page Down and Page Up) a screen, and Home and End go to the first or the last. As in Vim, those keys scroll the lists, and `j`/`k` scroll them only when the selection would leave the screen; `l` or → opens the selected PR's, issue's or stack's page in the dashboard, with a PR's unresolved review threads and an issue's text (see [PR and issue pages](#pr-and-issue-pages)); `t` opens the stack page of a PR in a stack (see [Stacks](#stacks)); `/` filters the lists; `1` to `6` hide and show the sections (see [Hiding sections](#hiding-sections)); `s` cycles the shader, `e` cycles the effects, `r` refreshes, `q` quits. Enter on an agent shows its pane in the Rex app. Enter on a PR or an issue opens a worktree for it. Enter on a stack opens its GitHub page in your browser. `o` on a PR, a stack or an issue opens its GitHub page in your browser, with `open` on macOS or `xdg-open` elsewhere. That's on the machine rex-dash runs on, so on a remote Rex server it opens there. Keys you add yourself run your own commands on a PR or an issue, such as starting an agent on it: see [Custom keys](#custom-keys).
 
 ## Filtering
 
-`/` starts a fuzzy filter, like [fzf](https://github.com/junegunn/fzf). As you type, the fleet, review requests, my PRs and issues keep only the items that match, in their usual order, with the matched characters underlined. Each heading counts its matches. Usage isn't filtered.
+`/` starts a fuzzy filter, like [fzf](https://github.com/junegunn/fzf). As you type, the fleet, review requests, my PRs, stacks and issues keep only the items that match, in their usual order, with the matched characters underlined. Each heading counts its matches. Usage isn't filtered.
 
-- An item matches when the query's characters appear in its text in order, though not necessarily together: `fxlg` matches "fix login". An item's text is what its rows show. A pane's text also includes its session's name.
+- An item matches when the query's characters appear in its text in order, though not necessarily together: `fxlg` matches "fix login". An item's text is what its rows show. A pane's text also includes its session's name. A stack is kept or left out whole, with its PRs.
 - Spaces separate terms. An item must match every term, in any order.
 - A term with a capital letter matches case. Otherwise case doesn't matter.
 - While you type, the selection goes to the best match. Characters next to each other and at the start of words count most.
@@ -37,7 +40,7 @@ While you type, letters go into the query, so keys such as `q` and `j` don't act
 
 After Enter, `/` edits the filter and Esc clears it. PRs and issues are filtered from what the dashboard fetched, which is up to 30 of each.
 
-`/reply` keeps your PRs that have replies waiting on you. Since the filter is fuzzy, it also keeps any PR whose text has those letters in order.
+`/reply` keeps your PRs that have replies waiting on you. `/stack` keeps the PRs in a stack, and `/stack flux#6611` the stack and the PRs in it. Since the filter is fuzzy, they also keep anything whose text has those letters in order.
 
 ## Hiding sections
 
@@ -49,9 +52,12 @@ Each section has a number key, in screen order, that hides it and shows it again
 | `2` | Usage | `usage` |
 | `3` | Review requests | `review_requests` |
 | `4` | My PRs | `my_prs` |
-| `5` | Issues | `issues` |
+| `5` | Stacks | `stacks` |
+| `6` | Issues | `issues` |
 
-The keys last until you quit. While sections are hidden, the header lists them with their keys, such as `hidden [2] usage [5] issues`. To hide sections every time, list them in `hide` in `$XDG_CONFIG_HOME/rex-dash/config.json`, or `~/.config/rex-dash/config.json`:
+Outside a repo there's no stacks section, so `5` does nothing.
+
+The keys last until you quit. While sections are hidden, the header lists them with their keys, such as `hidden [2] usage [6] issues`. To hide sections every time, list them in `hide` in `$XDG_CONFIG_HOME/rex-dash/config.json`, or `~/.config/rex-dash/config.json`:
 
 ```json
 {
@@ -61,7 +67,7 @@ The keys last until you quit. While sections are hidden, the header lists them w
 
 The keys still show them for the session. `--once` leaves them out too. `r` reads the file again. Then a section whose entry in `hide` changed takes the file's word, and the others stay as your keys left them.
 
-A hidden section isn't fetched, so it costs nothing. Hiding usage skips the scan of Claude Code's transcripts, and hiding both review requests and my PRs skips the PR query. A section you show again is fetched at once. Until then it shows its cached data, and the header shows how old that is. j/k select only what shows, and the filter only looks through it.
+A hidden section isn't fetched, so it costs nothing. Hiding usage skips the scan of Claude Code's transcripts, hiding both review requests and my PRs skips the PR query, and hiding stacks skips fetching them. A section you show again is fetched at once. Until then it shows its cached data, and the header shows how old that is. j/k select only what shows, and the filter only looks through it.
 
 ## Replies
 
@@ -76,6 +82,37 @@ The dashboard reads the last 20 threads, 10 reviews and 10 comments of each PR. 
 
 While replies wait on you, Rex shows the dashboard's pane as blocked, waiting on you, with a message such as "2 PRs need your reply". Then you can see it in Rex's sidebar when the dashboard is out of sight. While my PRs is [hidden](#hiding-sections), it doesn't.
 
+## Stacks
+
+A [stack](https://gh.io/stacks) is a chain of PRs that build on each other: the first targets the repo's branch, and each of the others targets the branch of the PR below it. You make them with [`gh stack`](https://github.com/github/gh-stack) or on GitHub.
+
+In [repo mode](#repo-mode), the stacks section shows the repo's open stacks, newest first, up to 10. Each stack has a row like this:
+
+```
+⧉ flux#6611 → master  ○●●●○  3/5 approved · 2 need review · next #6594
+```
+
+It shows the stack's number and the branch it targets. Then it has a glyph for each PR in order from the base, with green `●` approved, red `●` changes requested, yellow `○` needing review, dim `◌` a draft, magenta `✓` merged and dim `·` closed. Then it counts them, out of the whole stack, merged PRs included. Last is the next PR to merge, the lowest open one, which holds up the rest. Under the row are the stack's PRs, up to 20, in order from the base. A stack whose open PRs are all drafts is dim, as are merged and closed PRs.
+
+j/k select a stack, and each PR in it, which acts as it does in my PRs: `l` opens its page, Enter its worktree, and your keys run on it. On a stack:
+
+| Key | Action |
+| --- | --- |
+| `l`, →, `t` | Open the stack's page in the dashboard |
+| Enter, `o` | Open the stack's page on GitHub in your browser |
+
+`t` on a PR in a stack opens its stack's page, with that PR selected: in my PRs or review requests, under a stack, or on the PR's page. That works outside a repo too.
+
+A stack's page shows the stack's counts, the next PR to merge and its link. Then it shows each PR in order, with its branch onto the branch below, its author, any replies waiting on you, and when it was updated. On it, j/k select a PR, and `l` or → opens its page. `←` goes back to the page you came from, so `t` on a PR's page and `←` return to the PR. Enter and `o` open the stack in your browser, and `r` refreshes.
+
+### What stacks cost
+
+GitHub's GraphQL can't list a repo's stacks, so they come from its REST API, 100 to a page. Each page is asked for with its ETag, so a page that hasn't changed comes back as "not modified", which costs nothing, and its stacks come from the cache.
+
+A stack's PRs come from your PRs and review requests when they're in them, which costs nothing more. Merged and closed PRs are fetched once and kept. The rest are fetched in one query, about 1 point of GitHub's 5,000 an hour, every minute. A PR's place in its stack comes with the PR query and its page, at no cost.
+
+A stack's page outside a repo, or with the stacks section hidden, is fetched by itself when it opens, for about 1 point.
+
 ## PR and issue pages
 
 `l` or → on a PR or an issue shows its page in place of the lists, to read without leaving the dashboard.
@@ -83,6 +120,7 @@ While replies wait on you, Rex shows the dashboard's pane as blocked, waiting on
 A PR's page shows:
 
 - its state, review decision, author, branches, size and checks, naming the ones that fail;
+- its stack, when it's in one: the stack's counts and PRs, with this one marked `▸`, and `[t]` to open it. With no stacks section, as outside a repo, it says where the PR is, such as `⧉ 2 of 5 in stack flux#6611`;
 - its **unresolved review threads**, each with its file and line, the last lines of the diff it's on, and every comment. A yellow `↩` marks a thread that waits on you, as in [Replies](#replies): someone else, not a bot, has the last word, in your PR or in a thread you wrote in. Those come first. Resolved threads aren't shown, but the heading counts them;
 - its description;
 - its conversation: the latest comments and reviews, oldest first. In your PR, a `↩` marks the ones that came after your last comment, review or commit.
@@ -95,12 +133,13 @@ On a page:
 
 | Key | Action |
 | --- | --- |
-| ←, Esc or Backspace | Go back to the lists, with the same selection |
+| ←, Esc or Backspace | Go back to the page you came from, or the lists, with the same selection |
 | `j`/`k` or ↓/↑ | Scroll a line |
 | Space or Ctrl-F, Ctrl-B | Scroll a screen down or up. Page Down and Page Up too |
 | Ctrl-D, Ctrl-U | Scroll half a screen |
 | Home, End | Go to the top or the bottom |
 | Enter, `o`, your keys | As in the lists: open a worktree, the browser, or run your command, for this PR or issue |
+| `t` | Open the PR's stack's page |
 | `r` | Refresh the page, and the dashboard |
 
 The key bar shows which lines are on screen, such as `scroll 1-20 of 154`. The page is fetched from GitHub when it opens, on `r`, and every minute while it shows. A page you opened before shows at once, while it's fetched again. It costs about 2 points of GitHub's 5,000 an hour, and reads the first 100 review threads, with 30 comments each, and the latest 20 comments and reviews of a PR, or 30 comments of an issue. Pages aren't cached on disk.
@@ -163,7 +202,7 @@ The command gets the PR or issue, and its worktree, in variables:
 
 Use them, in double quotes, rather than putting their text in the command. Anyone can write an issue's title, and in `"$REX_DASH_TITLE"` it stays text, never a command. The command runs where Rex runs commands, in your login shell's environment, so your `PATH` applies but your aliases don't.
 
-A key is a single character, and case matters: `a` and `A` are different keys. The dashboard's own keys can't be mapped: `j`, `k`, `l`, `o`, `q`, `r`, `s`, `e`, `/` and `1` to `5`. Your keys work on a [PR's or issue's page](#pr-and-issue-pages) too, for that PR or issue. A key that's wrong is left out, and the header says why. `r` reads the file again, so you can try a change without restarting. Like Enter, your keys need repo mode.
+A key is a single character, and case matters: `a` and `A` are different keys. The dashboard's own keys can't be mapped: `j`, `k`, `l`, `o`, `q`, `r`, `s`, `e`, `t`, `/` and `1` to `6`. Your keys work on a [PR's or issue's page](#pr-and-issue-pages) too, for that PR or issue. A key that's wrong is left out, and the header says why. `r` reads the file again, so you can try a change without restarting. Like Enter, your keys need repo mode.
 
 ## Repo mode
 
@@ -171,6 +210,7 @@ Started inside a git repo, the dashboard shows only that repo, and its name appe
 
 - **Fleet:** panes whose working folder is in one of the repo's worktrees. In the bare-plus-worktrees layout (`<dir>/.bare`), anything under `<dir>` counts.
 - **PRs:** only PRs in the repo's GitHub repository, the one `gh` would use. A repo without a GitHub remote shows no PRs or issues.
+- **Stacks:** every open stack in that GitHub repository. Outside a repo there's no stacks section.
 - **Issues:** every open issue in that GitHub repository, not just yours.
 - **Usage:** only Claude Code sessions started in the repo's folders.
 
@@ -182,7 +222,7 @@ The dashboard caches what it shows, so a new dashboard opens straight on the las
 
 Each repo has its own cache, shared by all its worktrees. Everything, outside a repo, has its own as well. Caches live in `$XDG_CACHE_HOME/rex-dash`, or `~/.cache/rex-dash`, one folder per repo:
 
-- `state.json`: the last fleet, PRs, issues and usage, and the repo's GitHub name. The cached name is used straight away and checked against `gh` in the background. If it changed, PRs and issues are fetched again.
+- `state.json`: the last fleet, PRs, stacks and their pages' ETags, issues and usage, and the repo's GitHub name. The cached name is used straight away and checked against `gh` in the background. If it changed, PRs and issues are fetched again.
 - `transcripts.json`: the token usage read from each Claude Code transcript, limited to the repo and the last 30 days. Only transcripts that changed since are read again. Adding a worktree outside the repo's folders means reading them all once more.
 
 `--once` always fetches fresh data, but it still uses the transcripts and the GitHub name. You can delete the folder at any time; the next start just takes longer.
@@ -242,11 +282,11 @@ rex-dash --once   print one frame and exit
 rex-dash --test   run the self-check
 ```
 
-The fleet refreshes every 3 seconds, PRs and issues every minute and usage every 5 minutes, while they show. A PR's or issue's page refreshes every minute while it shows.
+The fleet refreshes every 3 seconds, PRs, stacks and issues every minute and usage every 5 minutes, while they show. A PR's or issue's page refreshes every minute while it shows.
 
 ## Development
 
-The source executable is a small entry point. `lib/app.js` owns dashboard state and refreshes; `lib/config.js` reads your keys and hidden sections; `lib/integrations/` calls Rex, GitHub and wt; `lib/storage.js` and `lib/usage.js` manage persisted data; and `lib/ui/` handles the terminal view and input, with `lib/ui/detail.js` drawing a PR's or issue's page. There is no runtime npm dependency. The release build uses Node 24, esbuild and postject **at build time** to bundle those modules into a single executable containing Node.
+The source executable is a small entry point. `lib/app.js` owns dashboard state and refreshes; `lib/config.js` reads your keys and hidden sections; `lib/integrations/` calls Rex, GitHub and wt; `lib/storage.js` and `lib/usage.js` manage persisted data; and `lib/ui/` handles the terminal view and input, with `lib/ui/detail.js` drawing a PR's, issue's or stack's page and `lib/ui/stacks.js` joining stacks with their PRs and summing them up. There is no runtime npm dependency. The release build uses Node 24, esbuild and postject **at build time** to bundle those modules into a single executable containing Node.
 
 ```sh
 ./rex-dash --test                      # source self-check
