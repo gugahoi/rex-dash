@@ -7,8 +7,10 @@ const path = require('node:path');
 const { createEffects, SHADERS, BAND, SCANLINE, bg, shaded } = require('../lib/ui/effects');
 const { createFilter } = require('../lib/ui/filter');
 const { createSections, MARK } = require('../lib/ui/sections');
-const { fit } = require('../lib/ui/screen');
-const { red, green, blue, dim, vis, clip, pad } = require('../lib/utils');
+const { fit, createScreen } = require('../lib/ui/screen');
+const { DIVIDER, helpLines, boxed, overlay } = require('../lib/ui/help');
+const { parseConfig } = require('../lib/config');
+const { red, green, blue, dim, bold, vis, clip, pad, sliceCols } = require('../lib/utils');
 
 test('terminal effects preserve styling, clipping and saved settings; once mode stays plain', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rex-dash-fx-'));
@@ -65,8 +67,8 @@ test('issue link precedence, selected rows, repo heading, and screen scrolling',
   starts([], dim('·'));
   selected = 'r#7';
   assert.ok(sections.issueLines(issue([]))[0].startsWith(MARK + dim('·')));
-  const rows = ['title', 'keys', BAND, 'a', 'b', 'c', `${MARK}x`, 'y', 'z'];
-  assert.deepEqual(fit([...rows], 8), ['title', 'keys', BAND, 'a', 'b', 'c', `${MARK}x`]); // the app scrolls
+  const rows = ['title', BAND, 'a', 'b', 'c', `${MARK}x`, 'y', 'z'];
+  assert.deepEqual(fit([...rows], 7), ['title', BAND, 'a', 'b', 'c', `${MARK}x`]); // the app scrolls
   assert.deepEqual(fit([...rows], 20), rows);
   repo = { roots: ['/r'] };
   assert.ok(vis(sections.renderIssues({ issueCount: 1, nodes: [issue()] })[0]).includes('1 open'));
@@ -306,4 +308,77 @@ test('a stacked PR\'s page shows its stack, marked where it is, or where it is w
   assert.ok(renderDetail({ kind: 'stack', key: 'r#9', item: {}, stack: s, sel: 1 }, 120)[9].startsWith(MARK));
   assert.deepEqual(renderDetail({ kind: 'stack', key: 'r#9', item: {} }, 80).map(vis), ['', 'STACK r#9  ', '  asking GitHub…']);
   assert.deepEqual(renderDetail({ kind: 'stack', key: 'r#9', item: {}, got: { err: 'offline' } }, 80).map(vis), ["  couldn't fetch it: offline", '', 'STACK r#9  ']);
+});
+
+test('a styled line slices by columns, keeping its style, its shaded runs paired, and half a wide character as a space', () => {
+  assert.equal(sliceCols('abcdef', 2, 4), 'cd');
+  assert.equal(sliceCols(`${red('abcd')}ef`, 1, 3), red('bc'));
+  assert.equal(sliceCols(`${red('ab')}cd`, 2), '\x1b[31m\x1b[0mcd\x1b[0m'); // the style it starts in
+  const line = `x${shaded('abcd')}y`;
+  assert.equal(sliceCols(line, 0, 2), 'x\x01a\x02');
+  assert.equal(sliceCols(line, 2, 4), '\x01bc\x02');
+  assert.equal(sliceCols(line, 4), '\x01d\x02y');
+  // a run closes before the codes after it, which paint() would colour character by character
+  assert.equal(sliceCols(`${bold(shaded('AB'))}  ${shaded('xy')}`, 0, 5), '\x1b[1m\x01AB\x02\x1b[0m  \x01x\x02\x1b[0m');
+  assert.equal(sliceCols('a🚀b', 2), ' b');
+  assert.equal(sliceCols('a🚀b', 0, 2), 'a ');
+  assert.equal(sliceCols('a🚀b', 1, 3), '🚀');
+  assert.equal(sliceCols('e\u0301x', 1), 'x'); // a combining mark stays with its character
+});
+
+test('the keys box fits its lines, cut to the room it has, and lies over the rows with what\'s either side of it', () => {
+  assert.deepEqual(boxed(['one', red('three'), 'a longer line than fits'], 'keys', 14, 10).map(vis),
+    ['╭─ keys ─────╮', '│ one        │', '│ three      │', '│ a longer l │', '╰────────────╯']);
+  assert.deepEqual(boxed(['1', '2', '3', '4'], 'k', 20, 5).map(vis), ['╭─ k ╮', '│ 1  │', '│ 2  │', '│ …  │', '╰────╯']);
+  assert.deepEqual(boxed(['a long line'], 'a long title', 9, 5).map(vis), ['╭───────╮', '│ a lon │', '╰───────╯']); // no room for the title
+  assert.deepEqual(boxed(['x', `${DIVIDER}more`, 'y'], 'k', 20, 6, 'a note').map(vis), ['╭─ k ─────╮', '│ x       │', '├─ more ──┤', '│ y       │', '╰─ a note ╯']);
+  assert.deepEqual(boxed(['x'], 'k', 4, 10), []);
+  assert.deepEqual(boxed(['x'], 'k', 20, 2), []);
+
+  const rows = ['0123456789', red('abcdefghij'), 'short', `${bold(shaded('HEADING'))}  x`];
+  overlay(rows, ['[--]', '[xx]', '[__]'], 10, 1, 4);
+  assert.deepEqual(rows.map(vis), ['0123456789', 'abc[--]hij', 'sho[xx]', 'HEA[__]  x']);
+  assert.ok(rows[1].includes('\x1b[31mhij'), 'the row\'s style goes on after the box');
+  const painted = createEffects({ settingsFile: '/nonexistent' }).paint(rows[3], 3, 20, 0);
+  assert.ok(!/[\x01\x02]/.test(painted) && vis(painted).startsWith('HEA[__]  x'));
+
+  // the screen draws it in the body, under the header's band, for as long as the popup has one
+  const out = [];
+  let box = ['[]'], room;
+  const screen = createScreen({
+    frame: () => ['title', BAND, 'a', 'b', 'c', 'd'], popup: (w, h) => { room = [w, h]; return box; },
+    effects: createEffects({ once: true }), output: { columns: 10, rows: 8, write: (s) => out.push(s) },
+  });
+  screen.draw();
+  const drawn = () => out.join('').split(/\x1b\[(\d+);1H/).slice(1).reduce((m, s, i, a) => (i % 2 ? m : { ...m, [a[i]]: vis(a[i + 1]).replace('\x1b[K', '') }), {});
+  assert.deepEqual(room, [9, 5]);
+  assert.equal(drawn()[5], 'c  []');
+  out.length = 0;
+  box = null;
+  screen.draw();
+  assert.equal(drawn()[5], 'c');
+});
+
+test('the keys show what acts on the view: the lists\' or a page\'s, your keys that act on it, and the shader and effects', () => {
+  const { keymaps } = parseConfig({ keymaps: { a: { label: 'agent', command: 'claude' }, R: { label: 'review', command: { pr: 'claude' } } } });
+  const fx = { shader: 'plasma', effect: 'bloom' };
+  const text = (opts) => helpLines({ fx, keymaps, configPath: '~/c.json', ...opts }).map(vis).join('\n');
+  const lists = text({ view: 'lists', hidden: new Set(['usage']) });
+  for (const k of [/^j\/k ↑\/↓ +select$/m, /^\^D \^U +half a screen down, up$/m, /^\^F \^B +a screen down, up \(PgDn, PgUp\)$/m, /^home end {2}the first, the last$/m,
+    /^⏎ +open/m, /^\/ +filter$/m, /^1-6 +hide or show: 1 fleet {2}2 usage {2}3 review requests$/m, /^ +4 my prs {2}6 issues$/m,
+    /^s e +shader plasma · effects bloom$/m, /^a +agent {2}issue, PR$/m, /^R +review {2}PR$/m]) assert.match(lists, k);
+  assert.ok(helpLines({ view: 'lists', fx, hidden: new Set(['usage']) }).some((l) => l.includes(dim('2 usage')))); // hidden ones dim
+  assert.match(text({ view: 'lists', repo: true }), /3 review requests\n +4 my prs {2}5 stacks {2}6 issues/);
+  assert.match(helpLines({ view: 'lists', fx, configPath: '~/c.json' }).map(vis).join('\n'), /^\x05your keys\nadd them in ~\/c\.json$/m);
+  assert.doesNotMatch(lists, /^esc/m); // the filter's row says what esc does
+
+  const issue = text({ view: 'issue' });
+  for (const k of [/^← esc ⌫ +back$/m, /^space \^F PgDn {2}a screen down$/m, /^⏎ +worktree$/m, /^a +agent$/m]) assert.match(issue, k);
+  assert.doesNotMatch(issue, /review|^t |add them/m);
+  assert.doesNotMatch(text({ view: 'pr' }), /^t /m);
+  assert.match(text({ view: 'pr', stacked: true }), /^t +stack page$/m);
+  assert.match(text({ view: 'pr' }), /^R +review$/m);
+  const stack = text({ view: 'stack' });
+  for (const k of [/^j\/k ↑\/↓ +select a PR$/m, /^l → +the PR's page$/m, /^⏎ o +open in the browser$/m]) assert.match(stack, k);
+  assert.doesNotMatch(stack, /agent|your keys|add them/);
 });

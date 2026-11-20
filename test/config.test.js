@@ -48,7 +48,8 @@ test('wrong keymaps are reported and left out, and the right ones still load', (
   ].entries()) assert.match(errors[i], pattern);
   assert.deepEqual(parseConfig([]).errors, ['the config is a JSON object']);
   assert.deepEqual(parseConfig({ keymaps: [] }).errors, ['keymaps is an object of keys']);
-  for (const key of 'jkloqrset/123456') assert.ok(BUILT_IN.includes(key));
+  for (const key of 'jkloqrset/?123456') assert.ok(BUILT_IN.includes(key));
+  assert.match(parseConfig({ keymaps: { '?': { command: 'x' } } }).errors[0], /"\?" is one of the dashboard's own keys/); // it shows the keys
   assert.match(parseConfig({ keymaps: { t: { command: 'x' } } }).errors[0], /"t" is one of the dashboard's own keys/);
   assert.match(parseConfig({ keymaps: { 1: { command: 'x' } } }).errors[0], /"1" is one of the dashboard's own keys/);
   assert.match(parseConfig({ keymaps: { l: { command: 'x' } } }).errors[0], /"l" is one of the dashboard's own keys/);

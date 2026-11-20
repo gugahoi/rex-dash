@@ -17,7 +17,7 @@ It shows:
 
 A PR's tag is its review status: `approved`, `changes`, `review` or `draft`. A PR whose base branch isn't protected, as in a stack, has no review decision on GitHub, so its latest reviews decide, without bots'. A PR in a stack shows where, such as a cyan `⧉2/5`: second from the base of a stack of 5.
 
-Keys: `j`/`k` or the arrow keys select an agent, a PR, a stack or an issue; Ctrl-D and Ctrl-U move the selection half a screen, Ctrl-F and Ctrl-B (or Page Down and Page Up) a screen, and Home and End go to the first or the last. As in Vim, those keys scroll the lists, and `j`/`k` scroll them only when the selection would leave the screen; `l` or → opens the selected PR's, issue's or stack's page in the dashboard, with a PR's unresolved review threads and an issue's text (see [PR and issue pages](#pr-and-issue-pages)); `t` opens the stack page of a PR in a stack (see [Stacks](#stacks)); `/` filters the lists; `1` to `6` hide and show the sections (see [Hiding sections](#hiding-sections)); `s` cycles the shader, `e` cycles the effects, `r` refreshes, `q` quits. Enter on an agent shows its pane in the Rex app. Enter on a PR or an issue opens a worktree for it. Enter on a stack opens its GitHub page in your browser. `o` on a PR, a stack or an issue opens its GitHub page in your browser, with `open` on macOS or `xdg-open` elsewhere. That's on the machine rex-dash runs on, so on a remote Rex server it opens there. Keys you add yourself run your own commands on a PR or an issue, such as starting an agent on it: see [Custom keys](#custom-keys).
+Keys: `?` shows the keys for what's on screen, the lists or a page, in a box over the dashboard, with your own keys and the current shader and effects. The next key closes it, and does nothing else; Ctrl-C still quits. `j`/`k` or the arrow keys select an agent, a PR, a stack or an issue; Ctrl-D and Ctrl-U move the selection half a screen, Ctrl-F and Ctrl-B (or Page Down and Page Up) a screen, and Home and End go to the first or the last. As in Vim, those keys scroll the lists, and `j`/`k` scroll them only when the selection would leave the screen; `l` or → opens the selected PR's, issue's or stack's page in the dashboard, with a PR's unresolved review threads and an issue's text (see [PR and issue pages](#pr-and-issue-pages)); `t` opens the stack page of a PR in a stack (see [Stacks](#stacks)); `/` filters the lists, in a row under the header; `1` to `6` hide and show the sections (see [Hiding sections](#hiding-sections)); `s` cycles the shader, `e` cycles the effects, `r` refreshes, `q` quits. Enter on an agent shows its pane in the Rex app. Enter on a PR or an issue opens a worktree for it. Enter on a stack opens its GitHub page in your browser. `o` on a PR, a stack or an issue opens its GitHub page in your browser, with `open` on macOS or `xdg-open` elsewhere. That's on the machine rex-dash runs on, so on a remote Rex server it opens there. Keys you add yourself run your own commands on a PR or an issue, such as starting an agent on it: see [Custom keys](#custom-keys).
 
 ## Filtering
 
@@ -142,7 +142,7 @@ On a page:
 | `t` | Open the PR's stack's page |
 | `r` | Refresh the page, and the dashboard |
 
-The key bar shows which lines are on screen, such as `scroll 1-20 of 154`. The page is fetched from GitHub when it opens, on `r`, and every minute while it shows. A page you opened before shows at once, while it's fetched again. It costs about 2 points of GitHub's 5,000 an hour, and reads the first 100 review threads, with 30 comments each, and the latest 20 comments and reviews of a PR, or 30 comments of an issue. Pages aren't cached on disk.
+The header shows which lines are on screen, such as `lines 1-20 of 154`. The page is fetched from GitHub when it opens, on `r`, and every minute while it shows. A page you opened before shows at once, while it's fetched again. It costs about 2 points of GitHub's 5,000 an hour, and reads the first 100 review threads, with 30 comments each, and the latest 20 comments and reviews of a PR, or 30 comments of an issue. Pages aren't cached on disk.
 
 ## Opening a worktree for a PR or an issue
 
@@ -183,7 +183,7 @@ Each key has:
 | Field | |
 | --- | --- |
 | `command` | Required. A command for `/bin/sh -c`, or one for each kind: `{"issue": "…", "pr": "…"}` |
-| `label` | Its name in the key bar and in its tabs' names, such as `agent #42`. The command's first word by default |
+| `label` | Its name in the keys `?` shows and in its tabs' names, such as `agent #42`. The command's first word by default |
 | `on` | `["issue"]`, `["pr"]` or both. The kinds `command` has by default |
 | `background` | `false` switches to the tab, as Enter does. `true` by default |
 | `keep_open` | `false` closes the tab when the command exits. `true` by default, so you can read what it printed |
@@ -202,7 +202,7 @@ The command gets the PR or issue, and its worktree, in variables:
 
 Use them, in double quotes, rather than putting their text in the command. Anyone can write an issue's title, and in `"$REX_DASH_TITLE"` it stays text, never a command. The command runs where Rex runs commands, in your login shell's environment, so your `PATH` applies but your aliases don't.
 
-A key is a single character, and case matters: `a` and `A` are different keys. The dashboard's own keys can't be mapped: `j`, `k`, `l`, `o`, `q`, `r`, `s`, `e`, `t`, `/` and `1` to `6`. Your keys work on a [PR's or issue's page](#pr-and-issue-pages) too, for that PR or issue. A key that's wrong is left out, and the header says why. `r` reads the file again, so you can try a change without restarting. Like Enter, your keys need repo mode.
+A key is a single character, and case matters: `a` and `A` are different keys. The dashboard's own keys can't be mapped: `j`, `k`, `l`, `o`, `q`, `r`, `s`, `e`, `t`, `/`, `?` and `1` to `6`. Your keys work on a [PR's or issue's page](#pr-and-issue-pages) too, for that PR or issue. A key that's wrong is left out, and the header says why. `r` reads the file again, so you can try a change without restarting. Like Enter, your keys need repo mode.
 
 ## Repo mode
 
@@ -231,10 +231,10 @@ Each repo has its own cache, shared by all its worktrees. Everything, outside a 
 
 Everything is drawn with truecolor text, at 10 frames a second, rewriting only rows that changed.
 
-- **Shaders** (`s`): `aurora`, `plasma`, `ember` or `off`. The shader animates the bands at the top and bottom, the headings and the usage charts.
+- **Shaders** (`s`): `aurora`, `plasma`, `ember` or `off`. The shader animates the bands at the top and bottom, the headings, the usage charts and the border of the keys `?` shows.
 - **Effects** (`e`): `bloom+scanlines`, `bloom`, `scanlines` or `off`. Bloom puts a soft glow behind coloured text. Scanlines darken every other row and paint the pane's background, replacing your terminal theme's background.
 
-Both start at `aurora` and `bloom+scanlines`. The dashboard remembers the last ones you picked, for every dashboard in every repo, in `$XDG_STATE_HOME/rex-dash/settings.json` (`~/.local/state/rex-dash/settings.json`). That's apart from the cache, so deleting the cache keeps them. `--once` always prints without them.
+Both start at `aurora` and `bloom+scanlines`. The header says which one you picked, and `?` shows both. The dashboard remembers the last ones you picked, for every dashboard in every repo, in `$XDG_STATE_HOME/rex-dash/settings.json` (`~/.local/state/rex-dash/settings.json`). That's apart from the cache, so deleting the cache keeps them. `--once` always prints without them.
 
 ## Requirements
 
