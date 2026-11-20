@@ -66,8 +66,8 @@ test('issue link precedence, selected rows, repo heading, and screen scrolling',
   selected = 'r#7';
   assert.ok(sections.issueLines(issue([]))[0].startsWith(MARK + dim('·')));
   const rows = ['title', 'keys', BAND, 'a', 'b', 'c', `${MARK}x`, 'y', 'z'];
-  assert.deepEqual(fit([...rows], 8), ['title', 'keys', BAND, 'b', 'c', `${MARK}x`, 'y']);
-  assert.deepEqual(fit([...rows], 6), ['title', 'keys', BAND, `${MARK}x`, 'y']);
+  assert.deepEqual(fit([...rows], 8), ['title', 'keys', BAND, 'a', 'b', 'c', `${MARK}x`]); // the app scrolls
+  assert.deepEqual(fit([...rows], 20), rows);
   repo = { roots: ['/r'] };
   assert.ok(vis(sections.renderIssues({ issueCount: 1, nodes: [issue()] })[0]).includes('1 open'));
 });

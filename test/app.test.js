@@ -315,3 +315,109 @@ test('l or → opens the selected PR\'s or issue\'s page, which scrolls, and ←
   app.press('\x1b');
   assert.match(text()[1], /^\/fix {2}\[esc\] clear/);
 });
+
+test('Ctrl-D/U, Ctrl-F/B, Page Down/Up, Home and End scroll the lists as in Vim, and j/k only to keep the selection on screen', async () => {
+  const body = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n\n');
+  const integrations = {
+    details: async (url) => ({ __typename: 'Issue', viewer: 'me', number: 73, title: 'bug 3', url, state: 'OPEN', body, author: { login: 'ann' }, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z', assignees: { nodes: [] }, labels: { nodes: [] }, closedByPullRequestsReferences: { nodes: [] }, comments: { totalCount: 0, nodes: [] } }),
+  };
+  const stdout = { columns: 100, rows: 20, write() {} }; // 16 rows for the lists: half a screen is 8, a screen 15
+  const config = { keymaps: new Map(), hide: new Set(['usage', 'review_requests']), errors: [] };
+  const app = createApp({ stdout, config, integrations }), { state } = app;
+  const agents = (from, n) => Array.from({ length: n }, (_, k) => pane(`b${from + k}`, `agent ${from + k}`, 'web'));
+  state.fleet = [{ label: 'web', panes: agents(0, 10) }];
+  state.prs = { review: { issueCount: 0, nodes: [] }, mine: { issueCount: 10, nodes: Array.from({ length: 10 }, (_, k) => pr(20 + k)) } };
+  state.issues = { issueCount: 5, nodes: Array.from({ length: 5 }, (_, k) => ({ ...issue(70 + k, `bug ${k}`), url: `https://github.com/o/r/issues/${70 + k}` })) };
+
+  const shown = () => app.frame().slice(3).map(vis); // the lists, from the top of the screen down
+  let total = shown().length;
+  // FLEET: its heading, its session's label and 10 agents of 2 rows, at rows 3 to 22. MY PRS: its heading and
+  // 10 PRs of a row, at 25 to 34. ISSUES: its heading and 5 issues of 2 rows, at 37 to 46.
+  assert.equal(total, 47);
+  const at = () => shown().findIndex((l) => l.startsWith('▸ ')); // the selection's row on screen
+  const where = () => [shown()[at()]?.match(/agent \d+|r#\d+/)[0], total - shown().length, at()]; // and the scroll
+  const press = (...keys) => keys.forEach((k) => app.press(k));
+  const [D, U, F, B, HOME, END] = ['\x04', '\x15', '\x06', '\x02', '\x1b[H', '\x1b[F'];
+
+  press(D); // with nothing selected, from the top of the screen: agent 2 is at rows 7-8, so the view keeps row 7
+  assert.deepEqual(where(), ['agent 2', 7, 0]);
+  press(HOME);
+  assert.deepEqual(where(), ['agent 0', 0, 3]);
+
+  // j/k scroll only as far as it takes to keep the whole selection on screen
+  press(...'jjjjj');
+  assert.deepEqual(where(), ['agent 5', 0, 13]);
+  press('j');
+  assert.deepEqual(where(), ['agent 6', 1, 14]);
+  press(...'kkkkkk');
+  assert.deepEqual(where(), ['agent 0', 1, 2]);
+
+  // Ctrl-D and Ctrl-U scroll half a screen, and the selection keeps its row on screen
+  press(D);
+  assert.deepEqual(where(), ['agent 4', 9, 2]);
+  press('k');
+  assert.deepEqual(where(), ['agent 3', 9, 0]);
+  press('k');
+  assert.deepEqual(where(), ['agent 2', 7, 0]);
+  press(U); // the view stops at the top, the selection at the first agent
+  assert.deepEqual(where(), ['agent 0', 0, 3]);
+  press(U);
+  assert.deepEqual(where(), ['agent 0', 0, 3]);
+  for (const step of [['agent 4', 8, 3], ['agent 8', 16, 3], ['r#22', 24, 3], ['r#29', 31, 3], ['r#72', 31, 10], ['r#74', 31, 14], ['r#74', 31, 14]]) {
+    press(D); // PRs count a row each; at the bottom, the view stops and the selection goes on, to the last issue
+    assert.deepEqual(where(), step);
+  }
+  press(U);
+  assert.deepEqual(where(), ['r#70', 23, 14]);
+
+  // Ctrl-F and Ctrl-B, Page Down and Page Up, scroll a screen less a row; a selection they scroll off goes to
+  // the first row on screen, or the last; where they can't scroll, to the last or the first
+  press(HOME);
+  for (const [key, step] of [[F, ['agent 6', 15, 0]], [F, ['r#25', 30, 0]], ['\x1b[6~', ['r#26', 31, 0]], [F, ['r#74', 31, 14]],
+    [B, ['r#26', 16, 15]], ['\x1b[5~', ['agent 6', 1, 14]], [B, ['agent 5', 0, 13]], [B, ['agent 0', 0, 3]]]) {
+    press(key);
+    assert.deepEqual(where(), step);
+  }
+  press(...'jjjjjjjj', ...'kkkkk');
+  assert.deepEqual(where(), ['agent 3', 5, 4]);
+  press(B); // a selection still on screen stays, here where the view stops at the top
+  assert.deepEqual(where(), ['agent 3', 0, 9]);
+  press(END);
+  assert.deepEqual(where(), ['r#74', 31, 14]);
+
+  // with a filter kept, they move among its matches
+  press('/', ...'agent', '\r');
+  press(END);
+  assert.deepEqual(where().filter((_, i) => i !== 1), ['agent 9', 10]);
+  press(D);
+  assert.deepEqual(where().filter((_, i) => i !== 1), ['agent 9', 10]);
+  press(U);
+  assert.deepEqual(where().filter((_, i) => i !== 1), ['agent 5', 10]);
+  press('\x1b');
+
+  // while typing a filter, they don't act, and Ctrl-U clears it
+  press('/', ...'agent');
+  const typed = [where()[0], at()];
+  press(D, F, B, '\x1b[6~', END, HOME);
+  assert.deepEqual([where()[0], at()], typed);
+  assert.match(vis(app.frame()[1]), /^\/agent {3}\[⏎\] keep/);
+  press(U);
+  assert.match(vis(app.frame()[1]), /^\/ {3}\[⏎\] keep/);
+  press('\x1b');
+
+  // on a page, Ctrl-D scrolls the page; back, the lists are as they were
+  press(END, 'k');
+  assert.deepEqual(where(), ['r#73', 31, 12]);
+  await app.press('l');
+  press(D);
+  assert.match(vis(app.frame()[1]), /scroll 9-24 of \d+/);
+  press('\x1b[D');
+  assert.deepEqual(where(), ['r#73', 31, 12]);
+
+  // when the lists grow above the selection, or the pane shrinks, the view moves only to keep it on screen
+  state.fleet[0].panes.unshift(...agents(10, 3));
+  total += 6;
+  assert.deepEqual(where(), ['r#73', 35, 14]);
+  stdout.rows = 10;
+  assert.deepEqual(where(), ['r#73', 45, 4]);
+});
